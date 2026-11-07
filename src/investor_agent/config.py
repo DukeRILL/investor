@@ -20,6 +20,9 @@ class Settings(BaseModel):
     publish_mode: str = "auto"
 
     fred_api_key: str = ""
+    cloudinary_cloud_name: str = ""
+    cloudinary_api_key: str = ""
+    cloudinary_api_secret: str = ""
     database_path: Path = Path("data/investor.sqlite3")
     prompts_dir: Path = PROJECT_ROOT / "prompts"
     radar_config_path: Path = PROJECT_ROOT / "config" / "radar.yaml"

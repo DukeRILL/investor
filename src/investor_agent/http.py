@@ -39,7 +39,8 @@ class Http(Protocol):
 
     def get_bytes(self, url: str, max_bytes: int = 6_000_000, timeout: float = 30) -> tuple[bytes, str]: ...
 
-    def post_file(self, url: str, filename: str, data: bytes, content_type: str, timeout: float = 60) -> Any: ...
+    def post_file(self, url: str, filename: str, data: bytes, content_type: str, timeout: float = 60,
+                  fields: dict | None = None) -> Any: ...
 
 
 class HttpxClient:
@@ -87,8 +88,10 @@ class HttpxClient:
                     raise HttpError(413, "file is too large")
             return bytes(body), response.headers.get("content-type", "").split(";")[0].strip().lower()
 
-    def post_file(self, url: str, filename: str, data: bytes, content_type: str, timeout: float = 60) -> Any:
-        response = self._client.post(url, files={"file": (filename, data, content_type)}, timeout=timeout)
+    def post_file(self, url: str, filename: str, data: bytes, content_type: str, timeout: float = 60,
+                  fields: dict | None = None) -> Any:
+        response = self._client.post(url, files={"file": (filename, data, content_type)}, data=fields or None,
+                                     timeout=timeout)
         if response.status_code >= 400:
             raise HttpError(response.status_code, response.text)
         return response.json()

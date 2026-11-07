@@ -30,7 +30,7 @@ SECTION_TITLES = {
 }
 MIN_VERIFIED_SOURCES = 5
 MIN_MEDIA_NOMINATED = 5  # photos and videos the model must propose; unusable ones are dropped by media.py
-TELEGRAPH_PAGE_BYTES = 58_000  # Telegraph rejects content over 64 KB; keep a margin
+TELEGRAPH_PAGE_BYTES = 63_500  # Telegraph rejects content over 64 KB (65,536 bytes); keep a margin
 CAPTION_LIMIT = 1000  # Telegram caption limit is 1024
 EXCLUDED_INDUSTRIES = ("oil", "gas", "mining", "defense", "defence", "нефт", "газ", "оборон")
 
@@ -209,18 +209,21 @@ def _prepare(app: App, today: str) -> str:
     return "ready"
 
 
+def _uploader(app: App):
+    return (app.images or app.telegraph).upload_image
+
+
 def _attach_media(app: App, report: dict, registry: SourceRegistry) -> None:
     """Find real pictures for the nominated media and draw the chart. Failures only make the issue plainer."""
     try:
-        report["media_resolved"] = resolve_media(report.get("media") or [], registry, app.http,
-                                                 app.telegraph.upload_image)
+        report["media_resolved"] = resolve_media(report.get("media") or [], registry, app.http, _uploader(app))
     except Exception as exc:  # noqa: BLE001
         log.warning("media resolution failed: %s", type(exc).__name__)
         report["media_resolved"] = []
     chart = report.get("chart") or {}
     try:
         png = render_chart(chart.get("points") or [], chart.get("unit", "")) if chart else None
-        report["chart_image"] = app.telegraph.upload_image(png, "image/png") if png else None
+        report["chart_image"] = _uploader(app)(png, "image/png") if png else None
     except Exception as exc:  # noqa: BLE001
         log.warning("chart image failed: %s", type(exc).__name__)
         report["chart_image"] = None
@@ -360,8 +363,8 @@ def _size(nodes: list) -> int:
     return len(json.dumps(nodes, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
-def paginate(nodes: list, limit: int = TELEGRAPH_PAGE_BYTES) -> list[list]:
-    """Split page content into parts under Telegraph's 64 KB cap, cutting only before section headings."""
+def _pack(nodes: list, limit: int) -> list[list]:
+    """Greedy packing by section; cuts only before a section heading unless one section alone is too big."""
     groups: list[list] = [[]]
     for node in nodes:
         if node.get("tag") == "h3" and groups[-1]:
@@ -371,24 +374,45 @@ def paginate(nodes: list, limit: int = TELEGRAPH_PAGE_BYTES) -> list[list]:
     for group in groups:
         if pages[-1] and _size(pages[-1] + group) > limit:
             pages.append([])
-        for node in group:  # a single oversized section is cut between its blocks
+        for node in group:
             if pages[-1] and _size(pages[-1] + [node]) > limit:
                 pages.append([])
             pages[-1].append(node)
     return pages
 
 
+def paginate(nodes: list, limit: int = TELEGRAPH_PAGE_BYTES) -> list[list]:
+    """One page when it fits; otherwise the fewest parts, of similar size (no tiny tail page)."""
+    total = _size(nodes)
+    if total <= limit:
+        return [nodes]
+    parts = -(-total // limit)
+    pages = _pack(nodes, min(limit, int(total / parts * 1.15)))
+    return pages if len(pages) <= parts else _pack(nodes, limit)
+
+
+def _first_heading(nodes: list, default: str) -> str:
+    for node in nodes:
+        if node.get("tag") == "h3":
+            text = "".join(c for c in node.get("children", []) if isinstance(c, str)).strip()
+            if text:
+                return text
+    return default
+
+
 def create_pages(telegraph, title: str, nodes: list) -> str:
-    """Create one Telegraph page, or a chain of linked parts when the issue is long. Returns the first URL."""
+    """One Telegraph page, or linked parts when the issue is long. The link to the next part carries the title of
+    the section it starts with (not "part 2"). Returns the first URL."""
     pages = paginate(nodes)
-    next_url = None
+    next_url, next_name = None, ""
     for index in range(len(pages) - 1, -1, -1):
         content = list(pages[index])
+        name = _first_heading(pages[index], "Продолжение")
         if next_url:
             content.append({"tag": "p", "children": [{"tag": "a", "attrs": {"href": next_url},
-                                                      "children": [f"Продолжение: часть {index + 2} →"]}]})
-        page_title = title if index == 0 else f"{title} — часть {index + 1}"
-        next_url = telegraph.create_page(page_title, content)
+                                                      "children": [f"Читать дальше: {next_name} →"]}]})
+        page_title = title if index == 0 else f"{name} · {title}"
+        next_url, next_name = telegraph.create_page(page_title, content), name
     return next_url
 
 

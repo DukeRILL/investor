@@ -134,9 +134,48 @@ def test_paginate_splits_long_issue_and_chains_parts():
     assert len(pages) == 6 and all(unicorn._size(p) <= unicorn.TELEGRAPH_PAGE_BYTES for p in pages)
     graph = FakeTelegraph()
     first = unicorn.create_pages(graph, "Заголовок", nodes)
-    assert first == "https://telegra.ph/test-page-6"  # pages are created last-to-first, so the first part is the newest
-    assert graph.pages[-1][0] == "Заголовок" and graph.pages[0][0].endswith("часть 6")
-    assert "Продолжение: часть 2" in json.dumps(graph.pages[-1][1], ensure_ascii=False)
+    assert first == "https://telegra.ph/test-page-6"  # parts are created last-to-first
+    assert graph.pages[-1][0] == "Заголовок" and graph.pages[0][0] == "Раздел 5 · Заголовок"
+    first_page = json.dumps(graph.pages[-1][1], ensure_ascii=False)
+    assert "Читать дальше: Раздел 1 →" in first_page and "часть" not in first_page.lower()
+
+
+def test_paginate_avoids_a_tiny_tail_page():
+    """An issue a little over the limit is cut into two similar halves, not a full page plus one small block."""
+    nodes = []
+    for i in range(10):
+        nodes.append({"tag": "h3", "children": [f"Раздел {i}"]})
+        nodes.append({"tag": "p", "children": ["я" * 3_300]})  # ~6.6 KB each
+    nodes.append({"tag": "h3", "children": ["Суть"]})
+    nodes.append({"tag": "p", "children": ["я" * 1_000]})
+    total = unicorn._size(nodes)
+    limit = total - 1_500  # just over: greedy would leave only the last section on page 2
+    pages = unicorn.paginate(nodes, limit)
+    assert len(pages) == 2 and all(unicorn._size(p) <= limit for p in pages)
+    assert unicorn._size(pages[1]) > total * 0.3
+    assert unicorn.paginate(nodes, total + 10) == [nodes]  # fits: a single page
+
+
+def test_cloudinary_upload_is_signed_and_returns_url():
+    import hashlib
+    from investor_agent.images import CloudinaryClient
+    http = FakeHttp()
+    url = CloudinaryClient(http, "demo", "key123", "s3cret").upload_image(b"x" * 100, "image/png")
+    assert url.endswith("/unicorn/abc.jpg") and http.posted["url"] == "https://api.cloudinary.com/v1_1/demo/image/upload"
+    f = http.posted["fields"]
+    expected = hashlib.sha1(f"public_id={f['public_id']}&timestamp={f['timestamp']}s3cret".encode()).hexdigest()
+    assert f["signature"] == expected and f["api_key"] == "key123" and "s3cret" not in json.dumps(f)
+    assert f["public_id"] == "unicorn/" + hashlib.sha1(b"x" * 100).hexdigest()[:20]
+
+
+def test_image_host_is_preferred_over_telegraph_upload(make_app):
+    from conftest import FakeImageHost
+    host = FakeImageHost()
+    app = _app_with_report(make_app)
+    app.images = host
+    unicorn.prepare(app, "2026-11-09")
+    saved = app.store.draft_get("2026-11-09")["payload"]["report"]
+    assert host.uploads and saved["media_resolved"][0]["src"].startswith("https://res.cloudinary.com/")
 
 
 def test_validate_requires_metrics_scores_and_media():

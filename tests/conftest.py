@@ -68,12 +68,12 @@ class FakeDeepSeek:
 
 @pytest.fixture
 def make_app(tmp_path):
-    def _make(deepseek=None, telegram=None, mode="auto", admin="111", http=None):
+    def _make(deepseek=None, telegram=None, mode="auto", admin="111", http=None, images=None):
         settings = Settings(database_path=tmp_path / "db.sqlite3", publish_mode=mode, telegram_admin_chat_id=admin,
                             deepseek_api_key="k", telegram_bot_token="t")
         return App(settings=settings, http=http, store=Store(settings.database_path),
                    deepseek=deepseek or FakeDeepSeek([]), telegram=telegram or FakeTelegram(),
-                   telegraph=FakeTelegraph())
+                   telegraph=FakeTelegraph(), images=images)
     return _make
 
 
@@ -83,8 +83,21 @@ class FakeHttp:
     def __init__(self, files=None):
         self.files = files or {}
 
+    def post_file(self, url, filename, data, content_type, timeout=60, fields=None):
+        self.posted = {"url": url, "filename": filename, "fields": fields}
+        return {"secure_url": "https://res.cloudinary.com/demo/image/upload/unicorn/abc.jpg"}
+
     def get_bytes(self, url, max_bytes=6_000_000, timeout=30):
         from investor_agent.http import HttpError
         if url not in self.files:
             raise HttpError(404, "not found")
         return self.files[url]
+
+
+class FakeImageHost:
+    def __init__(self):
+        self.uploads = []
+
+    def upload_image(self, data, content_type):
+        self.uploads.append((len(data), content_type))
+        return "https://res.cloudinary.com/test/image/upload/unicorn/x.jpg"

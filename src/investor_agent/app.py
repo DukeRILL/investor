@@ -7,6 +7,7 @@ from html import escape
 from .config import Settings
 from .deepseek import DeepSeekClient
 from .http import Http, HttpxClient
+from .images import CloudinaryClient
 from .storage import Store
 from .telegram import TelegramClient, TelegramError, TelegraphClient
 
@@ -21,6 +22,7 @@ class App:
     deepseek: DeepSeekClient
     telegram: TelegramClient
     telegraph: TelegraphClient
+    images: object | None = None  # image host with upload_image(); Telegraph's own upload is dead
 
     def prompt(self, name: str) -> str:
         return (self.settings.prompts_dir / f"{name}.md").read_text(encoding="utf-8")
@@ -52,9 +54,14 @@ class App:
 def build_app(settings: Settings, http: Http | None = None) -> App:
     http = http or HttpxClient()
     store = Store(settings.database_path)
+    images = None
+    if settings.cloudinary_cloud_name and settings.cloudinary_api_key and settings.cloudinary_api_secret:
+        images = CloudinaryClient(http, settings.cloudinary_cloud_name, settings.cloudinary_api_key,
+                                  settings.cloudinary_api_secret)
     return App(
         settings=settings, http=http, store=store,
         deepseek=DeepSeekClient(http, settings.deepseek_api_key, settings.deepseek_base_url),
         telegram=TelegramClient(http, settings.telegram_bot_token),
         telegraph=TelegraphClient(http, lambda: store.get("telegraph_token"), lambda t: store.set("telegraph_token", t)),
+        images=images,
     )
