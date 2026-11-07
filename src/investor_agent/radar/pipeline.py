@@ -9,7 +9,7 @@ from html import escape
 from ..app import App
 from ..quality import is_russian, word_count
 from ..sources import SourceRegistry
-from ..textfmt import split_html, to_tg_html
+from ..textfmt import reading_line, split_html, to_tg_html
 from ..timeutil import PeakHoursError, fmt_bj
 from . import market, triggers
 
@@ -125,6 +125,7 @@ def format_alert(alert: dict, registry: SourceRegistry, snap: market.Snapshot, c
     if alert.get("action") == "buy":
         final += f"\n\n<i>{DISCLAIMER}</i>"
     blocks.append(final)
+    blocks[0] += "\n" + reading_line("\n".join(blocks))
     return split_html(blocks)
 
 

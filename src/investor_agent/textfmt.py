@@ -27,6 +27,32 @@ def to_tg_html(text: str, registry: SourceRegistry | None = None) -> str:
     return html.strip()
 
 
+READING_WPM = 200  # words per minute for Russian non-fiction
+
+
+def reading_minutes(text: str) -> int:
+    """Approximate reading time in whole minutes (at least 1) for HTML or plain text."""
+    words = len(re.findall(r"\w+", re.sub(r"<[^>]+>|\[S\d+\]", " ", text or "")))
+    return max(1, round(words / READING_WPM))
+
+
+def minutes_ru(n: int) -> str:
+    if 11 <= n % 100 <= 14:
+        word = "минут"
+    elif n % 10 == 1:
+        word = "минута"
+    elif 2 <= n % 10 <= 4:
+        word = "минуты"
+    else:
+        word = "минут"
+    return f"{n} {word}"
+
+
+def reading_line(text: str) -> str:
+    """The line every channel post carries: one concrete number of minutes, never a range."""
+    return f"⏱ Время чтения: {minutes_ru(reading_minutes(text))}"
+
+
 def visible_len(html: str) -> int:
     return len(re.sub(r"<[^>]+>", "", html))
 

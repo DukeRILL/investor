@@ -13,7 +13,7 @@ from ..quality import count_sentences, is_russian
 from ..sources import CITE_RE, SourceRegistry
 from ..storage import norm_name
 from ..telegram import TelegramError
-from ..textfmt import table_nodes, text_to_nodes, to_tg_html, visible_len
+from ..textfmt import reading_line, table_nodes, text_to_nodes, to_tg_html, visible_len
 from ..timeutil import PeakHoursError, now_bj, ru_date
 
 log = logging.getLogger(__name__)
@@ -416,12 +416,22 @@ def create_pages(telegraph, title: str, nodes: list) -> str:
     return next_url
 
 
+def article_text(report: dict) -> str:
+    """Everything the reader gets on the page, for the reading-time estimate."""
+    parts = [report.get("subtitle", ""), report.get("facts_line", "")]
+    parts += [f"{m.get('value', '')} {m.get('label', '')} {m.get('note', '')}" for m in report.get("metrics") or []]
+    parts += [s.get("body", "") for s in report.get("sections") or []]
+    parts += [str(u) for u in report.get("unknowns") or []]
+    parts += [m.get("caption", "") for m in report.get("media_resolved") or []]
+    return "\n".join(parts)
+
+
 def build_post(report: dict, date_str: str) -> str:
     teaser = to_tg_html(re.sub(r"\[S\d+\]", "", report.get("teaser", "")))
     return (f"🦄 <b>ШКОЛА ЕДИНОРОГОВ</b> · {escape(date_str)}\n"
             f"<b>Компания дня: {escape(report['company_name'])}</b>\n\n"
             f"{teaser}\n\n"
-            f"⏱ Полный разбор — 10–15 минут чтения")
+            f"{reading_line(article_text(report))}")
 
 
 def _send_post(app: App, report: dict, date_str: str, url: str) -> int:

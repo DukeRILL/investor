@@ -44,6 +44,13 @@ class TelegramClient:
             payload["reply_markup"] = {"inline_keyboard": [[{"text": button[0], "url": button[1]}]]}
         return int(self._call("sendPhoto", payload)["message_id"])
 
+    def edit_caption(self, chat_id: str, message_id: int, html: str, button: tuple[str, str] | None = None) -> None:
+        """Change the caption of a photo post. The button must be passed again or Telegram removes it."""
+        payload = {"chat_id": chat_id, "message_id": message_id, "caption": html, "parse_mode": "HTML"}
+        if button:
+            payload["reply_markup"] = {"inline_keyboard": [[{"text": button[0], "url": button[1]}]]}
+        self._call("editMessageCaption", payload)
+
     def delete(self, chat_id: str, message_id: int) -> bool:
         return bool(self._call("deleteMessage", {"chat_id": chat_id, "message_id": message_id}))
 

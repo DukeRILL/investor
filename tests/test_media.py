@@ -239,3 +239,37 @@ def test_one_issue_is_exactly_one_chat_message(make_app):
     assert len(app.telegram.sent) == 1
     assert unicorn.publish(app, "2026-11-09") == "already_published" and len(app.telegram.sent) == 1
     assert unicorn.visible_len(app.telegram.sent[0]["html"]) <= unicorn.CAPTION_LIMIT
+
+
+def test_reading_time_is_one_concrete_number_with_correct_russian_form():
+    from investor_agent.textfmt import minutes_ru, reading_line, reading_minutes
+    assert [minutes_ru(n) for n in (1, 2, 4, 5, 11, 12, 21, 22, 25, 111)] == [
+        "1 минута", "2 минуты", "4 минуты", "5 минут", "11 минут", "12 минут", "21 минута", "22 минуты", "25 минут", "111 минут"]
+    assert reading_minutes("слово " * 2000) == 10 and reading_minutes("") == 1
+    assert reading_minutes("<b>слово</b> [S3] " * 400) == 2  # tags and citations are not words
+    assert "–" not in reading_line("слово " * 3000) and reading_line("слово " * 3000) == "⏱ Время чтения: 15 минут"
+
+
+def test_unicorn_post_and_radar_alert_carry_reading_time():
+    from test_agents import alert_json, snap, NOW
+    from investor_agent.radar import pipeline as radar
+    reg = SourceRegistry()
+    report = good_report(reg)
+    post = unicorn.build_post(report, "9 ноября 2026")
+    assert "Время чтения:" in post and "–" not in post.split("Время чтения:")[1]
+    reg2 = SourceRegistry()
+    first = radar.format_alert(alert_json(reg2), reg2, snap(), NOW)[0]
+    assert "⏱ Время чтения: 1 минута" in first or "⏱ Время чтения: 2 минуты" in first
+
+
+def test_edit_caption_keeps_the_button():
+    from investor_agent.telegram import TelegramClient
+
+    class Capture:
+        def request(self, method, url, json_body=None, **kw):
+            self.url, self.body = url, json_body
+            return {"ok": True, "result": True}
+    http = Capture()
+    TelegramClient(http, "tok").edit_caption("@chan", 7, "<b>x</b>", button=("Читать", "https://t.example/a"))
+    assert http.url.endswith("/editMessageCaption") and http.body["message_id"] == 7
+    assert http.body["reply_markup"]["inline_keyboard"][0][0]["url"] == "https://t.example/a"
