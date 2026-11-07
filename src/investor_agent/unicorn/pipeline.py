@@ -9,7 +9,7 @@ from html import escape
 from ..app import App
 from ..chart import render_chart
 from ..media import resolve_media
-from ..quality import count_sentences, is_russian
+from ..quality import count_sentences, is_russian, strip_meta_notes
 from ..sources import CITE_RE, SourceRegistry
 from ..storage import norm_name
 from ..telegram import TelegramError
@@ -121,8 +121,8 @@ def strip_unknown_citations(report: dict, registry: SourceRegistry) -> None:
     def clean(text: str) -> str:
         return CITE_RE.sub(lambda m: m.group(0) if registry.get(m.group(1)) else "", text or "")
     for section in report.get("sections", []):
-        section["body"] = clean(section.get("body", ""))
-    report["teaser"] = clean(report.get("teaser", ""))
+        section["body"] = strip_meta_notes(clean(section.get("body", "")))
+    report["teaser"] = strip_meta_notes(clean(report.get("teaser", "")))
 
 
 def validate_report(report: dict, registry: SourceRegistry) -> list[str]:

@@ -49,3 +49,18 @@ def forbidden_mentions(text: str) -> list[str]:
     if re.search(r"\bFRED\b", text or ""):
         found.append("FRED")
     return found
+
+
+# Service remarks a model likes to append ("added to the list of covered companies", "material prepared on ...").
+_META_SENTENCE = re.compile(
+    r"[^.!?\n]*(?:добавлен\w*\s+в\s+(?:перечень|список|архив|базу)|чтобы\s+не\s+повторя\w+|"
+    r"в\s+следующих\s+выпусках|материал\s+подготовлен|как\s+(?:языковая\s+модель|ИИ)|"
+    r"данный\s+(?:текст|материал)\s+(?:создан|сгенерирован)|сгенерирован\w*\s+(?:ИИ|нейросет))[^.!?\n]*[.!?]?",
+    re.I)
+
+
+def strip_meta_notes(text: str) -> str:
+    """Remove AI/service remarks (owner's rule, docs/RULES.md section 5)."""
+    out = _META_SENTENCE.sub("", text or "")
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return re.sub(r"\n{3,}", "\n\n", out).strip()

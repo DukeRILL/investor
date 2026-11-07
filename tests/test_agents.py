@@ -259,3 +259,12 @@ def test_prepare_uses_reader_topic_and_falls_back(make_app):
     assert ds.calls[0]["payload"]["reader_topics"] == ["Финтех"]
     assert "reader_topics" not in ds.calls[1]["payload"]  # too few candidates -> agent's own choice
     assert app.store.draft_get("2026-11-09")["payload"]["reader_topics"] == []
+
+
+def test_strip_meta_notes():
+    from investor_agent.quality import strip_meta_notes
+    t = ("Правило: сначала докажите экономику.\n\nМатериал подготовлен на 7 ноября 2026 года. "
+         "Ramp добавлена в перечень уже разобранных компаний, чтобы не повторять её в следующих выпусках.")
+    out = strip_meta_notes(t)
+    assert out == "Правило: сначала докажите экономику."
+    assert strip_meta_notes("Ramp выросла втрое.") == "Ramp выросла втрое."
