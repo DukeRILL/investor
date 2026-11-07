@@ -31,6 +31,16 @@ def test_rank_excludes_archive_small_and_rotates():
     assert [r["name"] for r in ranked] == ["B", "A"]  # A penalised for repeating yesterday's industry
 
 
+def test_ai_quota_and_ranking():
+    hist = [{"industry": "AI", "ai": 1}] * 6 + [{"industry": "fintech", "ai": 0}] * 4
+    assert unicorn.ai_quota(hist)["ai_allowed"] is False  # 7/11 > 60%
+    assert unicorn.ai_quota(hist[:1] + hist[6:])["ai_allowed"] is True
+    assert unicorn.is_ai_issue({"industry": "enterprise AI"}) and not unicorn.is_ai_issue({"industry": "mail"})
+    cands = [cand("Plain"), cand("Smart", ai_core=True)]
+    assert unicorn.rank_candidates(cands, set(), [], True)[0]["name"] == "Smart"
+    assert unicorn.rank_candidates(cands, set(), [], False)[0]["name"] == "Plain"
+
+
 def good_report(registry):
     for i in range(6):
         src = registry.add(f"https://site{i}.com/a", f"Title {i}", f"Pub{i}")

@@ -53,6 +53,10 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         raw = sqlite3.connect(self.path)
         raw.executescript(SCHEMA)
+        cols = {r[1] for r in raw.execute("PRAGMA table_info(unicorn_archive)")}
+        if "ai" not in cols:  # 1 = AI-related company (Unicorn School AI share), NULL = unknown (old rows)
+            raw.execute("ALTER TABLE unicorn_archive ADD COLUMN ai INTEGER")
+            raw.commit()
         raw.close()
         with self._conn() as c:
             for name, industry, country in INITIAL_EXCLUSIONS:
@@ -111,17 +115,26 @@ class Store:
             return [dict(r) for r in c.execute("SELECT name, industry, country, published_date FROM unicorn_archive "
                                                "ORDER BY published_date DESC")]
 
-    def archive_add(self, name: str, industry: str, country: str, date: str, url: str) -> None:
+    def archive_add(self, name: str, industry: str, country: str, date: str, url: str,
+                    ai: bool | None = None) -> None:
         with self._conn() as c:
-            c.execute("INSERT OR REPLACE INTO unicorn_archive VALUES (?,?,?,?,?,?)",
-                      (norm_name(name), name, industry, country, date, url))
+            c.execute("INSERT OR REPLACE INTO unicorn_archive(norm_name, name, industry, country, published_date, "
+                      "url, ai) VALUES (?,?,?,?,?,?,?)",
+                      (norm_name(name), name, industry, country, date, url, None if ai is None else int(bool(ai))))
+
+    def last_issues(self, limit: int) -> list[dict]:
+        """The latest published issues (newest first), with the AI flag, for the AI-share window."""
+        with self._conn() as c:
+            return [dict(r) for r in c.execute(
+                "SELECT name, industry, published_date, ai FROM unicorn_archive WHERE published_date LIKE '20%' "
+                "ORDER BY published_date DESC LIMIT ?", (limit,))]
 
     def recent_archive(self, days: int, today: str) -> list[dict]:
         since = (datetime.fromisoformat(today) - timedelta(days=days)).date().isoformat()
         with self._conn() as c:
             return [dict(r) for r in c.execute(
                 "SELECT name, industry, country, published_date FROM unicorn_archive WHERE published_date >= ? "
-                "AND published_date LIKE '20%'", (since,))]
+                "AND published_date LIKE '20%' ORDER BY published_date DESC", (since,))]
 
     def draft_get(self, issue_date: str) -> dict | None:
         with self._conn() as c:

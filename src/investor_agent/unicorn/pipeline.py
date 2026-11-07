@@ -33,6 +33,12 @@ MIN_VERIFIED_SOURCES = 5
 MIN_MEDIA_NOMINATED = 5  # photos and videos the model must propose; unusable ones are dropped by media.py
 TELEGRAPH_PAGE_BYTES = 63_500  # Telegraph rejects content over 64 KB (65,536 bytes); keep a margin
 CAPTION_LIMIT = 1000  # Telegram caption limit is 1024
+# AI share (owner's rule): prefer AI-related unicorns, but at most 60% of the last AI_WINDOW issues.
+AI_SHARE_MAX = 0.6
+AI_WINDOW = 10
+AI_MIN_BASE = 5  # denominator floor, so the first issues are not blocked by a tiny history
+AI_BONUS = 1.0
+AI_OVER_PENALTY = 5.0
 EXCLUDED_INDUSTRIES = ("oil", "gas", "mining", "defense", "defence", "нефт", "газ", "оборон")
 
 
@@ -53,12 +59,31 @@ def weighted_score(scores: dict) -> float:
     return round(total, 2)
 
 
-def rank_candidates(candidates: list[dict], excluded: set[str], recent: list[dict]) -> list[dict]:
-    """Drop ineligible candidates, apply rotation penalties, sort by final score."""
+def is_ai_issue(row: dict) -> bool:
+    """AI flag of an archived issue; old rows without the flag are judged by the industry label."""
+    if row.get("ai") is not None:
+        return bool(row["ai"])
+    words = re.findall(r"[a-zа-яё]+", str(row.get("industry", "")).lower())
+    return any(w in ("ai", "ии", "ml", "llm", "genai") for w in words) or "artificial intelligence" in \
+        str(row.get("industry", "")).lower()
+
+
+def ai_quota(history: list[dict]) -> dict:
+    """AI share of the last issues and whether one more AI company keeps it within AI_SHARE_MAX."""
+    window = history[:AI_WINDOW]
+    ai = sum(1 for r in window if is_ai_issue(r))
+    allowed = (ai + 1) / max(len(window) + 1, AI_MIN_BASE) <= AI_SHARE_MAX + 1e-9
+    return {"window": len(window), "ai_issues": ai, "max_share": AI_SHARE_MAX, "ai_allowed": allowed}
+
+
+def rank_candidates(candidates: list[dict], excluded: set[str], recent: list[dict],
+                    ai_allowed: bool = True) -> list[dict]:
+    """Drop ineligible candidates, apply rotation penalties and the AI-share rule, sort by final score.
+
+    AI-related candidates get a bonus while the AI share allows one more, and a heavy penalty otherwise
+    (they win only when nothing else is eligible)."""
     recent_industries = {str(r.get("industry", "")).lower() for r in recent[:7]}
     recent_countries = {str(r.get("country", "")).lower() for r in recent[:3]}
-    recent_ai = sum(1 for r in recent[:3] if "ai" in str(r.get("industry", "")).lower().split()
-                    or "ии" in str(r.get("industry", "")).lower())
     ranked = []
     for c in candidates:
         name = str(c.get("name", "")).strip()
@@ -80,8 +105,8 @@ def rank_candidates(candidates: list[dict], excluded: set[str], recent: list[dic
             penalty += 1.0
         if str(c.get("country", "")).lower() in recent_countries:
             penalty += 0.5
-        if c.get("ai_core") and recent_ai >= 2:
-            penalty += 1.0
+        if c.get("ai_core"):
+            penalty += -AI_BONUS if ai_allowed else AI_OVER_PENALTY
         ranked.append({**c, "weighted_score": base, "final_score": round(base - penalty, 2), "penalty": penalty})
     ranked.sort(key=lambda x: x["final_score"], reverse=True)
     return ranked
@@ -165,22 +190,26 @@ def _prepare(app: App, today: str) -> str:
     archive = app.store.archive_list()
     recent = app.store.recent_archive(14, today)
     topics = poll.chosen_topics(app, today)  # readers' vote; [] -> the agent picks the topic itself
+    quota = ai_quota(app.store.last_issues(AI_WINDOW))
     stage1_payload = {
         "date": today, "excluded": [a["name"] for a in archive],
         "recent": [{"industry": r["industry"], "country": r["country"], "date": r["published_date"]} for r in recent],
+        "ai_quota": quota,
     }
     ranked: list[dict] = []
     if topics:
         stage1 = ds.research(s.deepseek_model_fast, app.prompt("unicorn_candidates"),
                              {**stage1_payload, "reader_topics": topics}, registry, max_tool_calls=30)
-        ranked = rank_candidates(stage1.get("candidates") or [], app.store.archived_names(), recent)
+        ranked = rank_candidates(stage1.get("candidates") or [], app.store.archived_names(), recent,
+                                 quota["ai_allowed"])
         if len(ranked) < 3:
             log.warning("too few candidates for reader topics %s; agent picks the topic", topics)
             topics = []
     if not topics:
         stage1 = ds.research(s.deepseek_model_fast, app.prompt("unicorn_candidates"), stage1_payload, registry,
                              max_tool_calls=30)
-        ranked = rank_candidates(stage1.get("candidates") or [], app.store.archived_names(), recent)
+        ranked = rank_candidates(stage1.get("candidates") or [], app.store.archived_names(), recent,
+                                 quota["ai_allowed"])
     if len(ranked) < 3:
         raise UnicornError(f"нужно минимум 3 подходящих кандидата, найдено {len(ranked)}")
     chosen, rejected = ranked[0], ranked[1:4]
@@ -216,7 +245,7 @@ def _prepare(app: App, today: str) -> str:
     used |= {r.get("source") for r in report.get("rounds") or [] if registry.get(str(r.get("source", "")))}
     app.store.draft_save(today, "ready", {
         "report": report, "chosen": {k: chosen.get(k) for k in ("name", "industry", "country", "final_score",
-                                                                 "weighted_score", "website")},
+                                                                 "weighted_score", "website", "ai_core")},
         "rejected": payload["rejected"], "sources": registry.brief(sorted(used, key=lambda x: int(x[1:]))),
         "reader_topics": topics, "poll_options": poll.make_options(app, poll.next_issue(today), recent),
     })
@@ -500,7 +529,8 @@ def publish(app: App, today: str | None = None) -> str:
     app.store.draft_mark(today, "published", page_url=url, message_ids=[mid])
     chosen = payload.get("chosen", {})
     app.store.archive_add(report["company_name"], report.get("industry") or chosen.get("industry", ""),
-                          report.get("country") or chosen.get("country", ""), today, url)
+                          report.get("country") or chosen.get("country", ""), today, url,
+                          ai=bool(chosen.get("ai_core")))
     tomorrow = poll.next_issue(today)  # readers vote on the topic of the next issue right after this one
     poll.post(app, tomorrow, payload.get("poll_options") or poll.fallback_options(tomorrow))
     return "published"
