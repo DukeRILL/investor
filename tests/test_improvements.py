@@ -155,28 +155,41 @@ def test_continuation_replies_to_and_quotes_previous_alert(make_app):
 
 
 # --- glossary ----------------------------------------------------------------------------------
-def test_glossary_created_pinned_and_grown(make_app):
+def test_glossary_is_a_grouped_collapsed_pinned_post_that_grows(make_app):
     app = make_app()
     assert glossary.sync(app) == "created"
-    post = app.telegram.sent[-1]
-    assert "ГЛОССАРИЙ" in post["html"] and "Время чтения" in post["html"] and post["button"][1].startswith("https://telegra.ph")
-    assert app.telegram.pinned == [len(app.telegram.sent)]
+    first, last = app.telegram.sent[0], app.telegram.sent[-1]
+    assert "ГЛОССАРИЙ" in first["html"] and "Время чтения" in last["html"] and first["button"] is None
+    assert "<blockquote expandable>" in first["html"] and "<b>Раунды и оценка</b>" in "".join(m["html"] for m in app.telegram.sent)
+    assert app.telegram.pinned == [1] and not app.telegraph.pages  # only the first message is pinned
     n = len(glossary.load(app))
     new = glossary.add_terms(app, glossary.clean_terms([
-        {"term": "Acqui-hire", "definition": "Покупка компании ради её команды, а не продукта или клиентов."},
+        {"term": "Acqui-hire", "group": "Раунды и оценка", "definition": "Покупка компании ради её команды, а не продукта или клиентов."},
+        {"term": "Hedge", "group": "нет такой", "definition": "Страховка от потерь с помощью противоположной сделки на рынке."},
         {"term": "ARR", "definition": "Дубликат существующего термина, его добавлять не нужно вовсе."},
         {"term": "Bad", "definition": "english only definition that is rejected"}]))
-    assert new == ["Acqui-hire"] and len(glossary.load(app)) == n + 1
+    assert new == ["Acqui-hire", "Hedge"] and len(glossary.load(app)) == n + 2  # no per-issue cap
     assert glossary.sync(app) == "updated"
-    assert app.telegram.edited[-1]["button"] and app.telegraph.edited and len(app.telegram.sent) == 1
+    assert "Acqui-hire" in "".join(e["html"] for e in app.telegram.edited)
+    assert "Прочее" in "".join(e["html"] for e in app.telegram.edited)
 
 
-def test_publish_adds_issue_terms_to_page_and_glossary(make_app):
+def test_glossary_splits_by_group_when_too_long(make_app):
+    app = make_app()
+    terms = dict(glossary.load(app))
+    for i in range(60):
+        terms[f"Термин {i}"] = ("Рынок и продукт", "Длинное определение для проверки. " * 8)
+    messages = glossary.build_messages(terms)
+    assert len(messages) > 1 and all(len(m) <= 4096 for m in messages) and "Время чтения" in messages[-1]
+
+
+def test_publish_adds_issue_terms_to_glossary_not_to_page(make_app):
     stage1 = lambda reg, p: {"candidates": [cand("Acme"), cand("Beta", industry="hr"), cand("Gamma", industry="edtech")]}
 
     def report(reg, p):
         r = good_report(reg)
-        r["glossary"] = [{"term": "Acqui-hire", "definition": "Покупка компании ради её команды, а не продукта."},
+        r["glossary"] = [{"term": "Acqui-hire", "group": "Раунды и оценка",
+                          "definition": "Покупка компании ради её команды, а не продукта."},
                          {"term": "ARR", "definition": "Уже есть в глоссарии, поэтому не должен добавляться снова."}]
         return r
 
@@ -184,8 +197,7 @@ def test_publish_adds_issue_terms_to_page_and_glossary(make_app):
     assert unicorn.prepare(app, "2026-11-09") == "ready"
     assert [t["term"] for t in app.store.draft_get("2026-11-09")["payload"]["report"]["glossary"]] == ["Acqui-hire"]
     assert unicorn.publish(app, "2026-11-09") == "published"
-    page = json.dumps(app.telegraph.pages[0][1], ensure_ascii=False)
-    assert "Термины выпуска" in page and "Acqui-hire" in page
+    assert "Термины выпуска" not in json.dumps(app.telegraph.pages[0][1], ensure_ascii=False)
     assert "Acqui-hire" in glossary.load(app) and any("ГЛОССАРИЙ" in m.get("html", "") for m in app.telegram.sent)
 
 

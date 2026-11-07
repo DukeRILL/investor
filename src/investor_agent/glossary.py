@@ -1,7 +1,8 @@
-"""Glossary of Unicorn School: one Telegraph page + one pinned channel post, grown with every issue.
+"""Glossary of Unicorn School: a pinned channel post (not an article), grown with every issue.
 
-The pinned post is a short message with a button (the article lives on telegra.ph, never as a series of messages).
-Each issue brings up to GLOSSARY_PER_ISSUE new terms; they are merged here after publication. docs/RULES.md section 5.
+Terms are grouped by topic; each group is a collapsed (expandable) quote. Only general economics/investing terms
+and abbreviations are explained, as many as an issue uses. If the text outgrows one Telegram message (4096
+characters) whole groups move to follow-up messages; the first one is pinned. docs/RULES.md section 5.
 """
 
 import json
@@ -11,17 +12,16 @@ from html import escape
 from .app import App
 from .quality import is_russian
 from .telegram import TelegramError
-from .textfmt import reading_line
+from .textfmt import reading_line, visible_len
 from .timeutil import now_bj, ru_date
 
 log = logging.getLogger(__name__)
 
 TERMS_KEY = "glossary_terms"
 STATE_KEY = "glossary_state"
-GLOSSARY_PER_ISSUE = 6
-TITLE = "Глоссарий «Школы единорогов»"
+MESSAGE_LIMIT = 3900
 
-SEED = {
+_SEED = {
     "ARR": "Annual Recurring Revenue, годовая повторяющаяся выручка: сумма регулярных платежей по подпискам, пересчитанная на год. Разовые платежи не входят.",
     "MRR": "Monthly Recurring Revenue, месячная повторяющаяся выручка по подпискам. ARR примерно равен MRR × 12.",
     "Burn rate": "Скорость сжигания денег: сколько компания тратит сверх заработанного за месяц.",
@@ -64,110 +64,140 @@ SEED = {
 }
 
 
-def clean_terms(raw) -> dict[str, str]:
-    """Terms proposed by the model: short name, Russian definition, no duplicates."""
-    out: dict[str, str] = {}
+GROUPS = list(['Выручка и метрики', 'Деньги и юнит-экономика', 'Раунды и оценка', 'Доли и права инвесторов', 'Рынок и продукт', 'Выход на биржу'])
+GROUP_OF = {'ARR': 'Выручка и метрики', 'MRR': 'Выручка и метрики', 'GMV': 'Выручка и метрики', 'Gross margin': 'Выручка и метрики', 'EBITDA': 'Выручка и метрики', 'NRR': 'Выручка и метрики', 'Churn': 'Выручка и метрики', 'Burn rate': 'Деньги и юнит-экономика', 'Runway': 'Деньги и юнит-экономика', 'Unit economics': 'Деньги и юнит-экономика', 'CAC': 'Деньги и юнит-экономика', 'LTV': 'Деньги и юнит-экономика', 'LTV/CAC': 'Деньги и юнит-экономика', 'Pre-money': 'Раунды и оценка', 'Post-money': 'Раунды и оценка', 'Down round': 'Раунды и оценка', 'Seed': 'Раунды и оценка', 'Series A/B/C': 'Раунды и оценка', 'Unicorn': 'Раунды и оценка', 'SAFE': 'Раунды и оценка', 'Term sheet': 'Раунды и оценка', 'Cap table': 'Доли и права инвесторов', 'Dilution': 'Доли и права инвесторов', 'Liquidation preference': 'Доли и права инвесторов', 'Vesting': 'Доли и права инвесторов', 'ESOP': 'Доли и права инвесторов', 'Secondary': 'Доли и права инвесторов', 'Tender offer': 'Доли и права инвесторов', 'TAM': 'Рынок и продукт', 'PMF': 'Рынок и продукт', 'GTM': 'Рынок и продукт', 'MVP': 'Рынок и продукт', 'Network effect': 'Рынок и продукт', 'Moat': 'Рынок и продукт', 'Bootstrapping': 'Рынок и продукт', 'B2B / B2C': 'Рынок и продукт', 'SaaS': 'Рынок и продукт', 'IPO': 'Выход на биржу', 'SPAC': 'Выход на биржу'}
+SEED = {k: (GROUP_OF.get(k, GROUPS[0]), v) for k, v in _SEED.items()}
+DEFAULT_GROUP = "Прочее"
+
+
+Term = tuple[str, str]  # (group, definition)
+
+
+def clean_terms(raw) -> dict[str, Term]:
+    """Terms proposed by the model: short name, known group, Russian definition, no duplicates."""
+    out: dict[str, Term] = {}
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
             continue
         term = " ".join(str(item.get("term", "")).split())
         text = " ".join(str(item.get("definition", "")).split())
+        group = str(item.get("group", "")).strip()
         if 1 < len(term) <= 60 and 20 <= len(text) <= 400 and is_russian(text) and term.lower() not in {k.lower() for k in out}:
-            out[term] = text
+            out[term] = (group if group in GROUPS else DEFAULT_GROUP, text)
     return out
 
 
-def load(app: App) -> dict[str, str]:
+def _stored(app: App) -> dict[str, Term]:
     try:
-        stored = json.loads(app.store.get(TERMS_KEY, "{}"))
+        raw = json.loads(app.store.get(TERMS_KEY, "{}"))
     except ValueError:
-        stored = {}
-    return {**SEED, **stored}
+        raw = {}
+    return {k: (v[0], v[1]) for k, v in raw.items() if isinstance(v, list) and len(v) == 2}
+
+
+def load(app: App) -> dict[str, Term]:
+    return {**SEED, **_stored(app)}
 
 
 def known_terms(app: App) -> list[str]:
     return sorted(load(app))
 
 
-def add_terms(app: App, terms: dict[str, str]) -> list[str]:
-    """Merge new terms; returns the ones that were really new (case-insensitive)."""
-    current = load(app)
-    lower = {k.lower() for k in current}
-    new = {k: v for k, v in list(terms.items())[:GLOSSARY_PER_ISSUE] if k.lower() not in lower}
+def add_terms(app: App, terms: dict[str, Term]) -> list[str]:
+    """Merge new terms (no cap); returns the ones that were really new (case-insensitive)."""
+    lower = {k.lower() for k in load(app)}
+    new = {k: v for k, v in terms.items() if k.lower() not in lower}
     if new:
-        try:
-            stored = json.loads(app.store.get(TERMS_KEY, "{}"))
-        except ValueError:
-            stored = {}
-        stored.update(new)
-        app.store.set(TERMS_KEY, json.dumps(stored, ensure_ascii=False))
+        app.store.set(TERMS_KEY, json.dumps({**_stored(app), **new}, ensure_ascii=False))
     return list(new)
 
 
-def page_nodes(terms: dict[str, str]) -> list:
-    nodes: list = [{"tag": "p", "children": [{"tag": "i", "children": [
-        "Термины из выпусков «Школы единорогов» простыми словами. Список пополняется с каждым выпуском."]}]}]
-    for term in sorted(terms, key=str.lower):
-        nodes.append({"tag": "p", "children": [{"tag": "b", "children": [term]}, f" — {terms[term]}"]})
-    return nodes
+def _group_html(title: str, items: list[tuple[str, str]], group: str) -> tuple[str, str]:
+    body = "\n".join(f"• <b>{escape(t)}</b> — {escape(d)}" for t, d in items)
+    return group, f"<b>{escape(title)}</b>\n<blockquote expandable>{body}</blockquote>"
 
 
-def post_html(count: int, text: str) -> str:
-    return (f"📚 <b>ГЛОССАРИЙ «ШКОЛЫ ЕДИНОРОГОВ»</b>\n"
-            f"Термины из выпусков простыми словами: ARR, burn rate, down round, cap table и другие. "
-            f"Сейчас в нём {count}, список пополняется с каждым выпуском.\n"
-            f"Обновлён: {escape(ru_date(now_bj()))}\n\n{reading_line(text)}")
+def build_messages(terms: dict[str, Term]) -> list[str]:
+    """Group blocks packed into messages; the header and reading time are in the first/last."""
+    by_group: dict[str, list[tuple[str, str]]] = {}
+    for term, (group, text) in terms.items():
+        by_group.setdefault(group, []).append((term, text))
+    order = [g for g in GROUPS + [DEFAULT_GROUP] if g in by_group]
+    header = (f"📚 <b>ГЛОССАРИЙ «ШКОЛЫ ЕДИНОРОГОВ»</b>\nТермины и сокращения из выпусков простыми словами: "
+              f"{len(terms)}. Нажмите на тему, чтобы раскрыть. Список пополняется с каждым выпуском.\n"
+              f"Обновлён: {escape(ru_date(now_bj()))}")
+    footer = reading_line(" ".join(f"{k} {v[1]}" for k, v in terms.items()))
+    blocks = []
+    for g in order:  # a group longer than one message is cut into several blocks of the same group
+        chunk, size = [], 0
+        for item in sorted(by_group[g], key=lambda x: x[0].lower()):
+            if chunk and size + len(item[1]) + len(item[0]) + 30 > MESSAGE_LIMIT - 600:
+                blocks.append(_group_html(g if not blocks or blocks[-1][0] != g else f"{g} (продолжение)", chunk, g))
+                chunk, size = [], 0
+            chunk.append(item)
+            size += len(item[1]) + len(item[0]) + 30
+        blocks.append(_group_html(g if not blocks or blocks[-1][0] != g else f"{g} (продолжение)", chunk, g))
+    messages, current = [], header
+    for _, block in blocks:
+        if len(current) + len(block) + 2 > MESSAGE_LIMIT and current != header:
+            messages.append(current)
+            current = "📚 <b>Глоссарий, продолжение</b>"
+        current += "\n\n" + block
+    messages.append(current + "\n\n" + footer)
+    return messages
 
 
 def sync(app: App) -> str:
-    """Create or update the Telegraph page and the pinned post. Returns created | updated | failed."""
-    terms = load(app)
-    nodes = page_nodes(terms)
+    """Create or update the pinned glossary post(s). Returns created | updated | failed."""
+    texts = build_messages(load(app))
     try:
         state = json.loads(app.store.get(STATE_KEY, "{}"))
     except ValueError:
         state = {}
-    text = " ".join(f"{k} {v}" for k, v in terms.items())
-    chat, button_text = app.target_chat(), "📖 Открыть глоссарий"
+    chat = app.target_chat()
+    ids: list[int] = list(state.get("message_ids") or []) if state.get("chat") == chat else []
+    result = "updated" if ids else "created"
     try:
-        if state.get("page_url"):
-            app.telegraph.edit_page(state["page_url"], TITLE, nodes)
-        else:
-            state["page_url"] = app.telegraph.create_page(TITLE, nodes)
-        button = (button_text, state["page_url"])
-        html = post_html(len(terms), text)
-        result = "updated"
-        if state.get("message_id") and state.get("chat") == chat:
+        for i, text in enumerate(texts):
+            if i < len(ids):
+                try:
+                    app.telegram.edit_text(chat, ids[i], text)
+                    continue
+                except TelegramError as exc:
+                    msg = str(exc).lower()
+                    if "not modified" in msg:
+                        continue
+                    if "not found" not in msg:
+                        raise
+            new_id = app.telegram.send(chat, text)
+            if i < len(ids):
+                ids[i] = new_id
+            else:
+                ids.append(new_id)
+            if i == 0:
+                try:
+                    app.telegram.pin(chat, new_id)
+                except TelegramError as exc:
+                    app.notify_admin(f"Глоссарий опубликован, но не закреплён: {exc}. Закрепите сообщение вручную "
+                                     "или дайте боту право закреплять сообщения.")
+        for extra in ids[len(texts):]:
             try:
-                app.telegram.edit_text(chat, state["message_id"], html, button=button)
-            except TelegramError as exc:
-                msg = str(exc).lower()
-                if "not modified" in msg:
-                    return "updated"
-                if "not found" not in msg:  # a deleted pinned post is re-created below
-                    raise
-                state.pop("message_id")
-        if not state.get("message_id"):
-            state["message_id"] = app.telegram.send(chat, html, button=button)
-            state["chat"] = chat
-            result = "created"
-            try:
-                app.telegram.pin(chat, state["message_id"])
-            except TelegramError as exc:
-                app.notify_admin(f"Глоссарий опубликован, но не закреплён: {exc}. Закрепите сообщение вручную "
-                                 "или дайте боту право закреплять сообщения.")
+                app.telegram.delete(chat, extra)
+            except TelegramError:
+                pass
+        state.update(chat=chat, message_ids=ids[:len(texts)])
         app.store.set(STATE_KEY, json.dumps(state))
         return result
     except Exception as exc:  # noqa: BLE001 - the glossary never blocks an issue
         log.warning("glossary sync failed: %s", exc)
         app.notify_admin(f"Глоссарий не обновлён: {exc}")
-        if state.get("page_url"):
-            app.store.set(STATE_KEY, json.dumps(state))
+        state.update(chat=chat, message_ids=ids)
+        app.store.set(STATE_KEY, json.dumps(state))
         return "failed"
 
 
-def page_url(app: App) -> str | None:
+def posted(app: App) -> bool:
     try:
-        return json.loads(app.store.get(STATE_KEY, "{}")).get("page_url")
+        return bool(json.loads(app.store.get(STATE_KEY, "{}")).get("message_ids"))
     except ValueError:
-        return None
+        return False

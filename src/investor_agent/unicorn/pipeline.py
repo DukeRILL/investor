@@ -244,8 +244,9 @@ def _prepare(app: App, today: str) -> str:
 
     report["company_name"] = report.get("company_name") or chosen["name"]
     factcheck.run(app, report, registry, chosen)  # second pass over the numbers; never blocks the issue
-    report["glossary"] = [{"term": k, "definition": v} for k, v in glossary.clean_terms(report.get("glossary")).items()
-                          if k.lower() not in {t.lower() for t in glossary.known_terms(app)}][:glossary.GLOSSARY_PER_ISSUE]
+    known = {t.lower() for t in glossary.known_terms(app)}
+    report["glossary"] = [{"term": k, "group": g, "definition": d} for k, (g, d) in glossary.clean_terms(report.get("glossary")).items()
+                          if k.lower() not in known]
     _attach_media(app, report, registry)
     all_text = "\n".join(x.get("body", "") for x in report["sections"])
     used = set(registry.cited_ids(all_text, report.get("teaser", "")))
@@ -356,7 +357,7 @@ def hero_photo(report: dict) -> dict | None:
     return next((m for m in photos if m.get("role") == "hero"), photos[0] if photos else None)
 
 
-def build_page(report: dict, registry: SourceRegistry, date_str: str, glossary_url: str | None = None) -> tuple[str, list]:
+def build_page(report: dict, registry: SourceRegistry, date_str: str) -> tuple[str, list]:
     title = f"ШКОЛА ЕДИНОРОГОВ — {date_str}. КОМПАНИЯ ДНЯ: {report['company_name']}"
     media = report.get("media_resolved") or []
     hero = hero_photo(report)
@@ -418,14 +419,6 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, glossary_u
     if report.get("unknowns"):
         nodes.append({"tag": "h3", "children": ["Что публично неизвестно"]})
         nodes.append({"tag": "ul", "children": [{"tag": "li", "children": [u]} for u in report["unknowns"]]})
-    terms = [t for t in report.get("glossary") or [] if isinstance(t, dict) and t.get("term")]
-    if terms or glossary_url:
-        nodes.append({"tag": "h3", "children": ["Термины выпуска"]})
-        for t in terms:
-            nodes.append({"tag": "p", "children": [{"tag": "b", "children": [t["term"]]}, f" — {t.get('definition', '')}"]})
-        if glossary_url:
-            nodes.append({"tag": "p", "children": [{"tag": "a", "attrs": {"href": glossary_url},
-                                                    "children": ["Все термины «Школы единорогов» →"]}]})
     nodes.append({"tag": "h3", "children": ["Источники"]})
     nodes.append({"tag": "ul", "children": [
         {"tag": "li", "children": [f"[{s.id[1:]}] ", {"tag": "a", "attrs": {"href": s.url}, "children": [s.title or s.url]},
@@ -526,7 +519,7 @@ def _grow_glossary(app: App, report: dict) -> None:
     """New terms of the issue go into the pinned glossary. Never blocks the publication."""
     try:
         new = glossary.add_terms(app, glossary.clean_terms(report.get("glossary")))
-        if new or not glossary.page_url(app):
+        if new or not glossary.posted(app):
             glossary.sync(app)
     except Exception as exc:  # noqa: BLE001
         log.warning("glossary update failed: %s", exc)
@@ -548,8 +541,7 @@ def publish(app: App, today: str | None = None) -> str:
     try:
         if not draft.get("page_url"):
             prune_dead_media(report, app.http)  # dead pictures/videos are dropped just before the page is built
-        url = draft.get("page_url") or create_pages(app.telegraph, *build_page(report, registry, date_str,
-                                                                               glossary.page_url(app)))
+        url = draft.get("page_url") or create_pages(app.telegraph, *build_page(report, registry, date_str))
         app.store.draft_mark(today, "ready", page_url=url)
         mid = _send_post(app, report, date_str, url)
     except Exception as exc:  # noqa: BLE001
