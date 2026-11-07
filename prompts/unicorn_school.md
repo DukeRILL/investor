@@ -64,7 +64,7 @@ Return only JSON:
   "subtitle": "One Russian sentence: what the company did and the one big number, e.g. «Как корпоративная карта превратилась в компанию за $60 млрд»",
   "facts_line": "США · основана в 2019 году · сайт ramp.com",
   "metrics": [{"label": "Годовой темп выручки", "value": "$2+ млрд", "note": "октябрь 2026 · заявление компании", "source": "S4"}],
-  "teaser": "2–3 short Russian sentences for the channel post: the key result with one number and the main lesson",
+  "teaser": "2–3 short Russian sentences for the channel post: the key result with one number and the main lesson. No verdict, no scores, no rating in the teaser: the verdict lives only on the page",
   "sections": [{"id": "summary", "title": "Итог за 30 секунд", "body": "…"}],
   "rounds": [{"date": "2025-03", "stage": "Series B", "amount": "USD 60 млн", "pre_money": "не раскрыто",
               "post_money": "USD 1,2 млрд", "lead": "…", "others": "…", "type": "primary|secondary|mixed|не раскрыто",

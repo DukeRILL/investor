@@ -317,6 +317,16 @@ def test_prompt_and_docs_keep_the_agreed_standards():
     for must in ("role `hero`", "logo", "reviews", "`charts`", "verdict_scores", "metrics"):
         assert must in prompt, must
     rules = (root / "docs" / "RULES.md").read_text(encoding="utf-8")
-    for must in ("одно сообщение", "личк", "Cloudinary", "Время чтения", "docs/reference/ramp-2026-11-07.md"):
+    for must in ("одно сообщение", "личк", "Cloudinary", "Время чтения", "Вердикт и оценки", "docs/reference/ramp-2026-11-07.md"):
         assert must in rules, must
     assert (root / "docs" / "reference" / "ramp-2026-11-07.md").exists()
+
+
+def test_channel_post_never_carries_the_verdict_or_scores():
+    reg = SourceRegistry()
+    report = good_report(reg)
+    report["verdict_scores"] = [{"score": 9, "label": "Клиентская боль"}] * 4
+    post = unicorn.build_post(report, "9 ноября 2026")
+    assert "ердикт" not in post and "/10" not in post and "Клиентская боль" not in post
+    _, nodes = unicorn.build_page(report, reg, "9 ноября 2026")
+    assert "9/10" in json.dumps(nodes, ensure_ascii=False)
