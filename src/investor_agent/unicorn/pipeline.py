@@ -25,7 +25,7 @@ WEIGHTS = {"demand": 0.30, "growth": 0.25, "investors": 0.20, "cis_fit": 0.15, "
 SECTION_IDS = ["summary", "idea", "start", "breakthrough", "money", "russia_cis", "lesson", "investor_verdict", "essence"]
 SECTION_TITLES = {
     "summary": "Итог за 30 секунд", "idea": "Идея и боль", "start": "Старт", "breakthrough": "Прорыв",
-    "money": "Деньги", "russia_cis": "Применимо ли в России", "lesson": "Урок",
+    "money": "Деньги", "russia_cis": "Аналоги и конкуренты в России", "lesson": "Урок",
     "investor_verdict": "Инвесторский вердикт", "essence": "Суть в пяти предложениях",
 }
 MIN_VERIFIED_SOURCES = 5
