@@ -9,6 +9,7 @@ from investor_agent.http import HttpError
 from investor_agent.quality import count_sentences, is_russian
 from investor_agent.scheduler import next_daily, next_radar, next_weekly
 from investor_agent.sources import SourceRegistry
+from investor_agent.telegram import TelegraphClient
 from investor_agent.textfmt import split_html, text_to_nodes, to_tg_html
 from investor_agent.timeutil import BEIJING, PeakHoursError, is_peak, minutes_until_peak, next_offpeak
 
@@ -95,6 +96,14 @@ def test_chat_raises_clear_error_on_persistent_empty_200():
     client.invalid_retry_delay = 0
     with pytest.raises(HttpError, match="invalid chat response"):
         client.chat("deepseek-flash", [])
+
+
+def test_telegraph_content_is_compact_json():
+    http = FakeHttp([{"ok": True, "result": {"url": "https://telegra.ph/x"}}])
+    client = TelegraphClient(http, lambda: "tok", lambda t: None)
+    assert client.create_page("t", [{"tag": "p", "children": ["a", "b"]}]) == "https://telegra.ph/x"
+    content = http.requests[0][1]["content"]
+    assert content == '[{"tag":"p","children":["a","b"]}]'
 
 
 def test_parse_json_tolerates_wrapping():

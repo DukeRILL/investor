@@ -82,6 +82,6 @@ class TelegraphClient:
 
     def create_page(self, title: str, nodes: list) -> str:
         payload = {"access_token": self._token(), "title": title[:256], "author_name": self.author_name,
-                   "author_url": self.author_url, "content": json.dumps(nodes, ensure_ascii=False),
+                   "author_url": self.author_url, "content": json.dumps(nodes, ensure_ascii=False, separators=(",", ":")),  # Telegraph caps content at 64 KB
                    "return_content": False}
         return self._call("createPage", payload)["url"]
