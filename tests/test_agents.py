@@ -194,3 +194,58 @@ def test_weekly_report(make_app):
     assert report.send_weekly_report(app) == "sent"
     msg = app.telegram.sent[0]
     assert msg["chat"] == "111" and "$1.50" in msg["html"] and "$15.00" in msg["html"] and "10 нед" in msg["html"]
+
+
+# --- unicorn readers' poll -------------------------------------------------------------------
+def test_poll_tally_counts_one_vote_and_keeps_ties():
+    from investor_agent.unicorn import poll
+    opts = ["Финтех", "Европа", "После 2020", "Маркетплейс"]
+    assert poll.tally(opts, [0, 0, 0, 0]) == []
+    assert poll.tally(opts, [0, 1, 0, 0]) == ["Европа"]
+    assert poll.tally(opts, [2, 0, 2, 1]) == ["Финтех", "После 2020"]
+
+
+def test_poll_options_from_deepseek_or_fallback(make_app):
+    from investor_agent.unicorn import poll
+    ds = FakeDeepSeek([])
+    app = make_app(deepseek=ds)
+    assert poll.make_options(app, "2026-11-10", []) == poll.fallback_options("2026-11-10")
+    ds.json_handler = lambda p: {"options": ["Финтех и платежи", "Компании из Европы", "Основаны после 2020 года",
+                                             "Маркетплейсы"]}
+    assert poll.make_options(app, "2026-11-10", []) == ["Финтех и платежи", "Компании из Европы",
+                                                        "Основаны после 2020 года", "Маркетплейсы"]
+    assert len(set(poll.fallback_options("2026-11-11"))) == 4
+
+
+def test_poll_posted_after_issue_and_closed_not_before_23_moscow(make_app):
+    from investor_agent.timeutil import BEIJING
+    from investor_agent.unicorn import poll
+    stage1 = lambda reg, p: {"candidates": [cand("Acme"), cand("Beta", industry="hr"), cand("Gamma", industry="edtech")]}
+    app = make_app(deepseek=FakeDeepSeek([stage1, lambda reg, p: good_report(reg)]))
+    unicorn.prepare(app, "2026-11-09")
+    assert unicorn.publish(app, "2026-11-09") == "published"
+    sent_poll = app.telegram.sent[1]
+    assert sent_poll["chat"] == "@investor_duker" and len(sent_poll["options"]) == 4
+    assert poll.post(app, "2026-11-10", sent_poll["options"]) is None  # one poll per issue
+    app.telegram.votes = [(sent_poll["options"][0], 0), (sent_poll["options"][1], 1)] + \
+        [(o, 0) for o in sent_poll["options"][2:]]
+    early = datetime(2026, 11, 10, 3, 59, tzinfo=BEIJING)  # 22:59 Moscow
+    assert poll.close(app, "2026-11-10", now=early) is None and not app.telegram.deleted
+    topic = poll.close(app, "2026-11-10", now=datetime(2026, 11, 10, 4, 0, tzinfo=BEIJING))
+    assert topic["chosen"] == [sent_poll["options"][1]] and topic["total"] == 1
+    assert app.telegram.deleted == [2]
+    assert poll.chosen_topics(app, "2026-11-10") == [sent_poll["options"][1]]  # recorded, idempotent
+
+
+def test_prepare_uses_reader_topic_and_falls_back(make_app):
+    import json
+    from investor_agent.unicorn import poll
+    stage_few = lambda reg, p: {"candidates": [cand("Acme")]}
+    stage1 = lambda reg, p: {"candidates": [cand("Acme"), cand("Beta", industry="hr"), cand("Gamma", industry="edtech")]}
+    ds = FakeDeepSeek([stage_few, stage1, lambda reg, p: good_report(reg)])
+    app = make_app(deepseek=ds)
+    app.store.set(poll.topic_key("2026-11-09"), json.dumps({"chosen": ["Финтех"], "votes": [1]}))
+    assert unicorn.prepare(app, "2026-11-09") == "ready"
+    assert ds.calls[0]["payload"]["reader_topics"] == ["Финтех"]
+    assert "reader_topics" not in ds.calls[1]["payload"]  # too few candidates -> agent's own choice
+    assert app.store.draft_get("2026-11-09")["payload"]["reader_topics"] == []

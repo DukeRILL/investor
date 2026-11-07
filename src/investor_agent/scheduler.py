@@ -12,10 +12,12 @@ from .radar import pipeline as radar
 from .report import send_weekly_report
 from .timeutil import BEIJING, PeakHoursError, is_peak, next_offpeak, now_bj
 from .unicorn import pipeline as unicorn
+from .unicorn import poll as unicorn_poll
 
 log = logging.getLogger(__name__)
 
-UNICORN_PREPARE_TIMES = ((3, 0), (5, 0), (7, 0))   # first run + two retries, all before 08:45
+UNICORN_POLL_CLOSE_TIME = unicorn_poll.CLOSE_TIME
+UNICORN_PREPARE_TIMES = ((4, 30), (6, 0), (7, 30))   # 30 min after the poll closes; retries, all before 08:45
 UNICORN_PUBLISH_TIME = (10, 0)
 RADAR_EVERY_HOURS = 3
 WEEKLY_REPORT = (6, 20, 0)   # Sunday 20:00 Beijing
@@ -64,6 +66,8 @@ class Scheduler:
         self.app, self.clock = app, clock
         self._stop = threading.Event()
         self.jobs = [
+            Job("unicorn_poll_close", lambda: unicorn_poll.close(app, unicorn.issue_date()),
+                lambda n: next_daily(n, (UNICORN_POLL_CLOSE_TIME,)), uses_deepseek=False),
             Job("unicorn_prepare", lambda: unicorn.prepare(app), lambda n: next_daily(n, UNICORN_PREPARE_TIMES)),
             Job("unicorn_publish", lambda: unicorn.publish(app), lambda n: next_daily(n, (UNICORN_PUBLISH_TIME,)),
                 uses_deepseek=False),
@@ -81,7 +85,7 @@ class Scheduler:
             return
         draft = self.app.store.draft_get(unicorn.issue_date(now))
         if draft and draft["status"] == "ready":
-            self.jobs[1].next_run = now
+            next(j for j in self.jobs if j.name == "unicorn_publish").next_run = now
 
     def _execute(self, job: Job) -> None:
         try:

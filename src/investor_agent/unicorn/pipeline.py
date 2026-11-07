@@ -1,4 +1,4 @@
-"""Unicorn School: prepare a report at night (off-peak), publish at 10:00 Beijing."""
+"""Unicorn School: prepare a report at night (off-peak, 04:30), publish at 10:00 Beijing, then the topic poll."""
 
 import json
 import logging
@@ -15,6 +15,7 @@ from ..storage import norm_name
 from ..telegram import TelegramError
 from ..textfmt import reading_line, table_nodes, text_to_nodes, to_tg_html, visible_len
 from ..timeutil import PeakHoursError, now_bj, ru_date
+from . import poll
 
 log = logging.getLogger(__name__)
 
@@ -163,11 +164,23 @@ def _prepare(app: App, today: str) -> str:
     registry = SourceRegistry()
     archive = app.store.archive_list()
     recent = app.store.recent_archive(14, today)
-    stage1 = ds.research(s.deepseek_model_fast, app.prompt("unicorn_candidates"), {
+    topics = poll.chosen_topics(app, today)  # readers' vote; [] -> the agent picks the topic itself
+    stage1_payload = {
         "date": today, "excluded": [a["name"] for a in archive],
         "recent": [{"industry": r["industry"], "country": r["country"], "date": r["published_date"]} for r in recent],
-    }, registry, max_tool_calls=30)
-    ranked = rank_candidates(stage1.get("candidates") or [], app.store.archived_names(), recent)
+    }
+    ranked: list[dict] = []
+    if topics:
+        stage1 = ds.research(s.deepseek_model_fast, app.prompt("unicorn_candidates"),
+                             {**stage1_payload, "reader_topics": topics}, registry, max_tool_calls=30)
+        ranked = rank_candidates(stage1.get("candidates") or [], app.store.archived_names(), recent)
+        if len(ranked) < 3:
+            log.warning("too few candidates for reader topics %s; agent picks the topic", topics)
+            topics = []
+    if not topics:
+        stage1 = ds.research(s.deepseek_model_fast, app.prompt("unicorn_candidates"), stage1_payload, registry,
+                             max_tool_calls=30)
+        ranked = rank_candidates(stage1.get("candidates") or [], app.store.archived_names(), recent)
     if len(ranked) < 3:
         raise UnicornError(f"нужно минимум 3 подходящих кандидата, найдено {len(ranked)}")
     chosen, rejected = ranked[0], ranked[1:4]
@@ -205,6 +218,7 @@ def _prepare(app: App, today: str) -> str:
         "report": report, "chosen": {k: chosen.get(k) for k in ("name", "industry", "country", "final_score",
                                                                  "weighted_score", "website")},
         "rejected": payload["rejected"], "sources": registry.brief(sorted(used, key=lambda x: int(x[1:]))),
+        "reader_topics": topics, "poll_options": poll.make_options(app, poll.next_issue(today), recent),
     })
     return "ready"
 
@@ -487,4 +501,6 @@ def publish(app: App, today: str | None = None) -> str:
     chosen = payload.get("chosen", {})
     app.store.archive_add(report["company_name"], report.get("industry") or chosen.get("industry", ""),
                           report.get("country") or chosen.get("country", ""), today, url)
+    tomorrow = poll.next_issue(today)  # readers vote on the topic of the next issue right after this one
+    poll.post(app, tomorrow, payload.get("poll_options") or poll.fallback_options(tomorrow))
     return "published"

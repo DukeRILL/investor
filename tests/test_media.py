@@ -239,8 +239,9 @@ def test_one_issue_is_exactly_one_chat_message(make_app):
     app = _app_with_report(make_app)
     unicorn.prepare(app, "2026-11-09")
     assert unicorn.publish(app, "2026-11-09") == "published"
-    assert len(app.telegram.sent) == 1
-    assert unicorn.publish(app, "2026-11-09") == "already_published" and len(app.telegram.sent) == 1
+    posts = lambda: [m for m in app.telegram.sent if "html" in m]  # the readers' poll that follows is not a post
+    assert len(posts()) == 1
+    assert unicorn.publish(app, "2026-11-09") == "already_published" and len(posts()) == 1
     assert unicorn.visible_len(app.telegram.sent[0]["html"]) <= unicorn.CAPTION_LIMIT
 
 

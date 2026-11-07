@@ -51,6 +51,16 @@ class TelegramClient:
             payload["reply_markup"] = {"inline_keyboard": [[{"text": button[0], "url": button[1]}]]}
         self._call("editMessageCaption", payload)
 
+    def send_poll(self, chat_id: str, question: str, options: list[str]) -> int:
+        """Anonymous regular poll (channels allow only anonymous polls)."""
+        payload = {"chat_id": chat_id, "question": question, "options": [{"text": o} for o in options],
+                   "is_anonymous": True, "allows_multiple_answers": False}
+        return int(self._call("sendPoll", payload)["message_id"])
+
+    def stop_poll(self, chat_id: str, message_id: int) -> dict:
+        """Close a poll sent by the bot; returns the final Poll with voter_count per option."""
+        return self._call("stopPoll", {"chat_id": chat_id, "message_id": message_id})
+
     def delete(self, chat_id: str, message_id: int) -> bool:
         return bool(self._call("deleteMessage", {"chat_id": chat_id, "message_id": message_id}))
 

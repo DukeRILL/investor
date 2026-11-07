@@ -37,6 +37,15 @@ class FakeTelegram:
         self.deleted.append(mid)
         return True
 
+    def send_poll(self, chat_id, question, options):
+        self.sent.append({"chat": chat_id, "question": question, "options": list(options)})
+        return len(self.sent)
+
+    def stop_poll(self, chat_id, mid):
+        self.stopped = mid
+        votes = getattr(self, "votes", [])
+        return {"options": [{"text": o, "voter_count": v} for o, v in votes]}
+
 
 class FakeTelegraph:
     def __init__(self):
@@ -57,6 +66,12 @@ class FakeDeepSeek:
         self.handlers = list(handlers)
         self.calls = []
         self.usage = Usage()
+
+    def complete_json(self, model, system, payload, **kw):
+        self.calls.append({"model": model, "payload": payload, "json": True})
+        if not getattr(self, "json_handler", None):
+            raise RuntimeError("no scripted complete_json")
+        return self.json_handler(payload)
 
     def research(self, model, system, payload, registry, **kw):
         self.calls.append({"model": model, "payload": payload})
