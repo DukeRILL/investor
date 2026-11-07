@@ -50,7 +50,7 @@ Research deeply before writing: official company statements, investor announceme
 8. `investor_verdict` — «ИНВЕСТОРСКИЙ ВЕРДИКТ» (kept short; the four scores go in `verdict_scores`: customer pain, proven growth, defensibility, reproducibility in Russia — each 1–10 and honest; do not give everything 9–10): why funds likely found it attractive, main red flag, open questions. Education, not a recommendation to buy shares.
 9. `essence` — «СУТЬ В ПЯТИ ПРЕДЛОЖЕНИЯХ»: exactly five sentences with the key lessons, then one reflection question about a specific unmet need or market inefficiency, then one practical rule. Nothing after the rule.
 
-Keep the report light: about 8–12 minutes of reading (roughly 15,000–22,000 Russian characters). Photos, videos, charts and the path from zero to unicorn remain mandatory.
+**Minimum length (hard rule): the article must take at least 15 minutes to read: at least 3,000 Russian words across all section bodies (about 22,000+ characters), ideally 3,300–4,000.** Reports below this are rejected and sent back. Get the depth from facts, not filler: concrete dates, numbers, quotes with sources, the founders' decisions and their reasons, mistakes, competitors, mini-cases. Every section must be substantial (the story sections `idea`, `start`, `breakthrough`, `money` at least 450 words each); keep the section structure and the simple storytelling style. Photos, videos, charts and the path from zero to unicorn remain mandatory.
 
 ## Output
 Return only JSON:

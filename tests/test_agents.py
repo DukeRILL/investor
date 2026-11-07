@@ -47,6 +47,7 @@ def good_report(registry):
         registry.mark_fetched(src.id, src.title, "content")
     sections = [{"id": sid, "title": unicorn.SECTION_TITLES[sid], "body": RU + " [S1] [S2] [S3] [S4] [S5] [S6]"}
                 for sid in unicorn.SECTION_IDS]
+    sections[1]["body"] += " слово" * 3000  # the 15-minute minimum
     sections[-1]["body"] = "Первое. Второе. Третье. Четвёртое. Пятое. Какую проблему вы видите каждый день? Правило: продавай до разработки."
     return {"company_name": "Acme", "industry": "финтех", "country": "США", "usefulness_score": 8,
             "teaser": "Acme выросла до 100 млн долларов ARR за три года [S1].", "sections": sections,

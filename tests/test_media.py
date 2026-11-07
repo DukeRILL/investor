@@ -332,3 +332,11 @@ def test_channel_post_never_carries_the_verdict_or_scores():
     assert "ердикт" not in post and "/10" not in post and "Клиентская боль" not in post
     _, nodes = unicorn.build_page(report, reg, "9 ноября 2026")
     assert "9/10" in json.dumps(nodes, ensure_ascii=False)
+
+
+def test_validate_requires_15_minutes_of_reading():
+    reg = SourceRegistry()
+    report = good_report(reg)
+    assert unicorn.validate_report(report, reg) == []
+    report["sections"][1]["body"] = report["sections"][1]["body"][:600]
+    assert any("need at least 15" in e for e in unicorn.validate_report(report, reg))

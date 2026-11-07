@@ -13,7 +13,7 @@ from ..quality import count_sentences, is_russian, strip_meta_notes
 from ..sources import CITE_RE, SourceRegistry
 from ..storage import norm_name
 from ..telegram import TelegramError
-from ..textfmt import reading_line, table_nodes, text_to_nodes, to_tg_html, visible_len
+from ..textfmt import READING_WPM, reading_line, reading_minutes, table_nodes, text_to_nodes, to_tg_html, visible_len
 from ..timeutil import PeakHoursError, now_bj, ru_date
 from .. import glossary
 from . import factcheck, poll
@@ -29,6 +29,7 @@ SECTION_TITLES = {
     "investor_verdict": "Инвесторский вердикт", "essence": "Суть в пяти предложениях",
 }
 MIN_VERIFIED_SOURCES = 5
+MIN_READ_MINUTES = 15  # owner's rule: the article reads for at least 15 minutes
 MIN_MEDIA_NOMINATED = 5  # photos and videos the model must propose; unusable ones are dropped by media.py
 TELEGRAPH_PAGE_BYTES = 63_500  # Telegraph rejects content over 64 KB (65,536 bytes); keep a margin
 CAPTION_LIMIT = 1000  # Telegram caption limit is 1024
@@ -136,6 +137,11 @@ def validate_report(report: dict, registry: SourceRegistry) -> list[str]:
     if essence and ("?" not in essence or count_sentences(essence) < 7):
         errors.append("essence must have exactly five sentences, then one question and one practical rule")
     all_text = "\n".join(s.get("body", "") for s in sections.values())
+    minutes = reading_minutes(all_text)
+    if minutes < MIN_READ_MINUTES:
+        errors.append(f"article reads for {minutes} min, need at least {MIN_READ_MINUTES} (about "
+                      f"{MIN_READ_MINUTES * READING_WPM} words): expand the existing sections with more facts, dates, "
+                      "numbers, quotes and examples, and write the sections that are too short; keep the structure")
     if all_text and not is_russian(all_text):
         errors.append("text must be in Russian")
     if report.get("teaser") and not is_russian(report["teaser"]):
@@ -230,7 +236,7 @@ def _prepare(app: App, today: str) -> str:
         report = ds.research(s.deepseek_model_pro, app.prompt("unicorn_school"), {
             **payload, "known_sources": registry.brief(), "previous_draft": report,
             "fix_these_problems": errors,
-            "instruction": "Fix the problems. Open more pages with fetch_page if sources are missing. "
+            "instruction": "Fix the problems (if the article is too short, add depth to every section, not filler). Open more pages with fetch_page if sources are missing. "
                            "Return the full corrected JSON.",
             "already_cited": cited,
         }, registry, max_tool_calls=20, cache_ttl=SEARCH_CACHE_HOURS)
