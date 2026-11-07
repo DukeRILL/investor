@@ -217,6 +217,72 @@ def fred_quotes(http: Http, api_key: str, errors: list[str]) -> dict[str, Quote]
     return out
 
 
+# --- Russia: MOEX ISS (stocks, index) and Bank of Russia (official USD/RUB) -----------------
+
+MSK = timezone(timedelta(hours=3))
+MOEX_STOCKS = {"SBER": "Сбербанк", "GAZP": "Газпром", "LKOH": "Лукойл", "ROSN": "Роснефть", "GMKN": "Норникель",
+               "NVTK": "Новатэк", "TATN": "Татнефть", "YDEX": "Яндекс", "PLZL": "Полюс", "MGNT": "Магнит"}
+MOEX_URL = "https://iss.moex.com/iss/engines/stock/markets/{market}.json"
+CBR_URL = "https://www.cbr-xml-daily.ru/daily_json.js"
+
+
+def _moex_rows(d: dict) -> list[dict]:
+    md = d["marketdata"]
+    return [dict(zip(md["columns"], row)) for row in md["data"]]
+
+
+def _moex_time(row: dict) -> str:
+    raw = str(row.get("SYSTIME") or "").strip()
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=MSK).astimezone(timezone.utc).isoformat(
+            timespec="seconds")
+    except ValueError:
+        return "1970-01-01T00:00:00+00:00"  # unknown time -> treated as stale
+
+
+def moex_quotes(http: Http, errors: list[str]) -> dict[str, Quote]:
+    """IMOEX and Russian blue chips from MOEX ISS (free, no key). Change is against the previous close."""
+    out: dict[str, Quote] = {}
+    try:
+        d = http.request("GET", MOEX_URL.format(market="index/securities/IMOEX"),
+                         params={"iss.meta": "off", "iss.only": "marketdata"}, timeout=20)
+        row = _moex_rows(d)[0]
+        if row.get("CURRENTVALUE") is not None and row.get("LASTCHANGEPRC") is not None:
+            out["IMOEX"] = Quote("IMOEX", "Индекс Мосбиржи (IMOEX)", float(row["CURRENTVALUE"]),
+                                 round(float(row["LASTCHANGEPRC"]), 2), "%", "к предыдущему закрытию",
+                                 _moex_time(row), "Московская биржа (ISS)")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"IMOEX: Мосбиржа недоступна ({type(exc).__name__})")
+    try:
+        d = http.request("GET", MOEX_URL.format(market="shares/boards/TQBR/securities"),
+                         params={"iss.meta": "off", "iss.only": "marketdata",
+                                 "securities": ",".join(MOEX_STOCKS)}, timeout=20)
+        for row in _moex_rows(d):
+            sec = row.get("SECID")
+            if sec in MOEX_STOCKS and row.get("LAST") is not None and row.get("LASTTOPREVPRICE") is not None:
+                out[sec] = Quote(sec, f"{MOEX_STOCKS[sec]} ({sec}, Мосбиржа)", float(row["LAST"]),
+                                 round(float(row["LASTTOPREVPRICE"]), 2), "%", "к предыдущему закрытию",
+                                 _moex_time(row), "Московская биржа (ISS)")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"акции РФ: Мосбиржа недоступна ({type(exc).__name__})")
+    return out
+
+
+def cbr_usdrub(http: Http, errors: list[str]) -> dict[str, Quote]:
+    """Official USD/RUB rate of the Bank of Russia vs the previous official rate (the rate is set once per day)."""
+    try:
+        d = http.request("GET", CBR_URL, timeout=20)
+        usd = d["Valute"]["USD"]
+        price, prev = float(usd["Value"]), float(usd["Previous"])
+        stamp = datetime.fromisoformat(d["Date"]).astimezone(timezone.utc).isoformat(timespec="seconds")
+        return {"USDRUB": Quote("USDRUB", "Курс доллара к рублю (официальный, ЦБ РФ)", price,
+                                round((price / prev - 1) * 100, 2), "%", "к предыдущему официальному курсу",
+                                stamp, "Банк России (cbr-xml-daily.ru)")}
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"USD/RUB: курс ЦБ недоступен ({type(exc).__name__})")
+        return {}
+
+
 # --- ETF flows (Farside, an aggregator) -----------------------------------------------------
 
 DATE_RE = re.compile(r"^\s*\|?\s*(\d{1,2} \w{3} \d{4})\s*\|")
@@ -283,6 +349,8 @@ def collect(http: Http, fred_key: str, fetch_page=None, now: datetime | None = N
         snap.errors.append(f"деривативы Binance недоступны ({type(exc).__name__})")
     snap.quotes.update(yahoo_quotes(http, snap.errors, store, now))
     snap.quotes.update(fred_quotes(http, fred_key, snap.errors))
+    snap.quotes.update(moex_quotes(http, snap.errors))
+    snap.quotes.update(cbr_usdrub(http, snap.errors))
     if fetch_page:
         for asset, url in FARSIDE.items():
             try:

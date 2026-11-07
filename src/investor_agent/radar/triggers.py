@@ -5,6 +5,7 @@ from pathlib import Path
 
 import yaml
 
+from . import market
 from .market import Snapshot, stale
 
 
@@ -65,6 +66,13 @@ def compute(snap: Snapshot, cfg: dict, window_start: datetime, etf_history: dict
                             "text": f"{q.label}: {q.price:.2f}% ({q.change:+.0f} б.п., {q.basis})"})
         for key, c in cfg.get("dollar", {}).items():
             _move(snap, key, c["move_pct"], window_start, out, "macro")
+
+    ru = cfg.get("russia", {})
+    if not snap.sessions.get("weekend"):
+        _move(snap, "IMOEX", ru.get("IMOEX", {}).get("move_pct", 1e9), window_start, out, "russia")
+        for key in market.MOEX_STOCKS:
+            _move(snap, key, ru.get("stocks_move_pct", 1e9), window_start, out, "russia")
+        _move(snap, "USDRUB", ru.get("USDRUB", {}).get("move_pct", 1e9), window_start, out, "russia")
 
     etf_cfg = cfg.get("etf_flows", {})
     for asset, data in snap.etf.items():

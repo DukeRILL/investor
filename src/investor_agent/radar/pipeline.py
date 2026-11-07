@@ -27,7 +27,9 @@ ASSET_TO_QUOTE = {"SPX": ["SPX", "ES", "VIX"], "SP500": ["SPX", "ES", "VIX"], "S
                   "NDX": ["NDX"], "VIX": ["VIX"], "BRENT": ["BRENT"], "WTI": ["WTI"], "OIL": ["BRENT", "WTI"],
                   "BTC": ["BTC"], "ETH": ["ETH"], "SOL": ["SOL"], "CRYPTO": ["BTC", "ETH"], "ALTS": ["SOL"],
                   "UST": ["US2Y", "US10Y"], "RATES": ["US2Y", "US10Y"], "US10Y": ["US10Y"], "US2Y": ["US2Y"],
-                  "DXY": ["DXY"], "USD": ["DXY"]}
+                  "DXY": ["DXY"], "USD": ["DXY"],
+                  "IMOEX": ["IMOEX"], "MOEX": ["IMOEX"], "RUSSIA": ["IMOEX", "USDRUB"], "USDRUB": ["USDRUB"],
+                  "RUB": ["USDRUB"], **{k: [k] for k in market.MOEX_STOCKS}}
 
 
 def event_key(ev: dict) -> str:

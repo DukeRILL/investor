@@ -15,6 +15,11 @@ equities:
   RUT: {move_pct: 3.0}
   VIX: {level: 25, change_pct: 20}
 
+russia:                        # MOEX ISS and Bank of Russia; a trigger only asks DeepSeek to look closer
+  IMOEX: {move_pct: 2.0}       # index vs previous close
+  stocks_move_pct: 3.0         # blue chips (see market.MOEX_STOCKS), owner's threshold: more than 3% in a day
+  USDRUB: {move_pct: 2.0}      # official CBR rate vs the previous official rate
+
 oil:
   BRENT: {move_pct: 5.0}
   WTI: {move_pct: 5.0}

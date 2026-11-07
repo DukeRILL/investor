@@ -244,3 +244,41 @@ def test_dead_media_is_dropped_before_publication():
     removed = precheck.prune_dead_media(report, http)
     assert [m["src"] for m in report["media_resolved"]] == ["https://img/ok.jpg"]
     assert report["chart_images"] == [None, "https://img/ok.jpg"] and removed["photos"] == 1 and removed["charts"] == 1
+
+
+# --- Russia ---------------------------------------------------------------------------------
+def test_russia_triggers_only_on_strong_moves():
+    from investor_agent.radar import triggers
+
+    def fake(url, **kw):
+        if "cbr-xml" in url:
+            return {"Date": "2026-11-07T11:30:00+03:00", "Valute": {"USD": {"Value": 95.0, "Previous": 92.0}}}
+        if "IMOEX" in url:
+            return {"marketdata": {"columns": ["CURRENTVALUE", "LASTCHANGEPRC", "SYSTIME"],
+                                   "data": [[2800.0, -0.5, "2026-11-07 15:00:00"]]}}
+        return {"marketdata": {"columns": ["SECID", "LAST", "LASTTOPREVPRICE", "SYSTIME"],
+                               "data": [["SBER", 300.0, -3.4, "2026-11-07 15:00:00"],
+                                        ["GAZP", 150.0, 2.9, "2026-11-07 15:00:00"]]}}
+
+    class H:
+        def request(self, method, url, **kw):
+            return fake(url)
+
+    errors: list[str] = []
+    quotes = {**market.moex_quotes(H(), errors), **market.cbr_usdrub(H(), errors)}
+    assert not errors and set(quotes) == {"IMOEX", "SBER", "GAZP", "USDRUB"}
+    snap = market.Snapshot(taken_at="x", sessions={"weekend": False}, quotes=quotes)
+    cfg = triggers.load_config(__import__("pathlib").Path("config/radar.yaml"))
+    got = triggers.compute(snap, cfg, datetime(2026, 11, 7, 0, tzinfo=timezone.utc))
+    assets = {t["asset"] for t in got if t["group"] == "russia"}
+    assert assets == {"SBER", "USDRUB"}  # GAZP 2.9% and IMOEX -0.5% stay silent
+
+
+def test_russia_source_failure_is_reported():
+    class Down:
+        def request(self, *a, **kw):
+            raise HttpError(503, "x")
+
+    errors: list[str] = []
+    assert market.moex_quotes(Down(), errors) == {} and market.cbr_usdrub(Down(), errors) == {}
+    assert len(errors) == 3
