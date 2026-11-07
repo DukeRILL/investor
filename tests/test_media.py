@@ -190,3 +190,13 @@ def test_chart_renders_png_when_font_is_available():
         pytest.skip("DejaVu font is not installed here")
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     assert chart.render_chart([{"label": "a", "value": 1}]) is None  # too few points
+
+
+def test_one_issue_is_exactly_one_chat_message(make_app):
+    """The owner forbids multi-message articles: the full text lives on Telegraph, the chat gets one post."""
+    app = _app_with_report(make_app)
+    unicorn.prepare(app, "2026-11-09")
+    assert unicorn.publish(app, "2026-11-09") == "published"
+    assert len(app.telegram.sent) == 1
+    assert unicorn.publish(app, "2026-11-09") == "already_published" and len(app.telegram.sent) == 1
+    assert unicorn.visible_len(app.telegram.sent[0]["html"]) <= unicorn.CAPTION_LIMIT
