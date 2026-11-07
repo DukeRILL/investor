@@ -12,6 +12,7 @@ from .unicorn import pipeline as unicorn
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # httpx INFO logs full URLs, incl. api_key=
     parser = argparse.ArgumentParser(prog="investor_agent")
     parser.add_argument("command", choices=["prepare", "publish", "radar", "status"])
     parser.add_argument("--date", help="issue date YYYY-MM-DD (Beijing) for prepare/publish")

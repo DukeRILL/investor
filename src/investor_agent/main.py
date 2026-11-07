@@ -15,6 +15,7 @@ from .timeutil import now_bj
 from .unicorn.pipeline import issue_date
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)  # httpx INFO logs full URLs, incl. api_key=
 log = logging.getLogger("investor_agent")
 
 settings = load_settings()
