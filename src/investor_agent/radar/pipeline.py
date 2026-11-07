@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 
 from ..app import App
-from ..quality import is_russian, word_count
+from ..quality import is_russian, scrub_text, word_count
 from ..sources import SourceRegistry
 from ..textfmt import reading_line, split_html, to_tg_html
 from ..timeutil import PeakHoursError, fmt_bj
@@ -98,7 +98,7 @@ def snapshot_lines(snap: market.Snapshot, assets: list[str]) -> list[str]:
 
 
 def format_alert(alert: dict, registry: SourceRegistry, snap: market.Snapshot, checked_at: datetime) -> list[str]:
-    head = [f"🚨 <b>{escape(alert['headline'])}</b>",
+    head = [f"🚨 <b>{escape(scrub_text(alert['headline']))}</b>",
             f"🕒 Проверка: {fmt_bj(checked_at)}"]
     if alert.get("event_time_utc"):
         try:

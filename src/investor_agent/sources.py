@@ -10,6 +10,21 @@ SYNDICATION_HOSTS = {"finance.yahoo.com", "news.yahoo.com", "msn.com", "www.msn.
                      "www.marketscreener.com", "investing.com", "www.investing.com", "tradingview.com", "www.tradingview.com"}
 
 
+# Owner's rule (docs/RULES.md §5): published links go only to news outlets and posts of large investors or
+# platforms. Data portals, statistics and encyclopedias may be used for research but are never linked.
+NON_CITABLE_HOSTS = {"fred.stlouisfed.org", "stlouisfed.org", "alfred.stlouisfed.org", "research.stlouisfed.org",
+                     "wikipedia.org", "wikiwand.com", "wikidata.org", "statista.com", "tradingeconomics.com",
+                     "macrotrends.net", "data.worldbank.org", "ycharts.com", "fxempire.com"}
+MAX_LINKS_PER_PARAGRAPH = 3
+
+
+def is_citable(url: str) -> bool:
+    host = domain(url or "")
+    if not host:
+        return False
+    return not any(host == h or host.endswith("." + h) for h in NON_CITABLE_HOSTS)
+
+
 def domain(url: str) -> str:
     host = urlparse(url).netloc.lower()
     return host[4:] if host.startswith("www.") else host
@@ -29,6 +44,10 @@ class Source:
     @property
     def domain(self) -> str:
         return domain(self.url)
+
+    @property
+    def citable(self) -> bool:
+        return is_citable(self.url)
 
 
 @dataclass
@@ -100,3 +119,23 @@ class SourceRegistry:
                 item["content"] = s.content[:content_chars]
             out.append(item)
         return out
+
+
+def cap_citations(text: str, registry: "SourceRegistry | None", limit: int = MAX_LINKS_PER_PARAGRAPH) -> str:
+    """Per paragraph keep at most `limit` distinct citable [Sn] marks; drop the rest and non-citable ones."""
+    def one(para: str) -> str:
+        kept: list[str] = []
+
+        def repl(m: re.Match) -> str:
+            src = registry.get(m.group(1)) if registry else None
+            if not src or not src.citable:
+                return ""
+            if m.group(1) in kept:
+                return m.group(0)
+            if len(kept) >= limit:
+                return ""
+            kept.append(m.group(1))
+            return m.group(0)
+        return re.sub(r"[ \t]+(?=[.,;:!?…)]|$)", "", CITE_RE.sub(repl, para), flags=re.M)
+    return "".join(one(part) if i % 2 == 0 else part
+                   for i, part in enumerate(re.split(r"(\n\s*\n)", text or "")))

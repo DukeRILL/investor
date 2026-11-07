@@ -10,7 +10,7 @@ from ..app import App
 from ..chart import render_chart
 from ..media import resolve_media
 from ..quality import count_sentences, is_russian
-from ..sources import CITE_RE, SourceRegistry
+from ..sources import CITE_RE, SourceRegistry, is_citable
 from ..storage import norm_name
 from ..telegram import TelegramError
 from ..textfmt import reading_line, table_nodes, text_to_nodes, to_tg_html, visible_len
@@ -233,6 +233,7 @@ def report_charts(report: dict) -> list[dict]:
 
 def _chart_nodes(ch: dict, image: str | None, registry: SourceRegistry) -> list:
     src = registry.get(str(ch.get("source", "")).split(",")[0].strip())
+    src = src if src and src.citable else None
     if image:
         caption: list = [ch.get("title", "Динамика"), f" ({ch['unit']})" if ch.get("unit") else ""]
         if src:
@@ -287,13 +288,14 @@ def _registry_from(sources: list[dict]) -> SourceRegistry:
 
 def _cite(registry: SourceRegistry, sid) -> dict | None:
     src = registry.get(str(sid or ""))
-    return {"tag": "a", "attrs": {"href": src.url}, "children": [f"[{src.id[1:]}]"]} if src else None
+    return {"tag": "a", "attrs": {"href": src.url}, "children": [f"[{src.id[1:]}]"]} if src and src.citable else None
 
 
 def _figure(m: dict) -> dict:
     inner = ({"tag": "img", "attrs": {"src": m["src"]}} if m["kind"] == "photo"
              else {"tag": "iframe", "attrs": {"src": m["embed"]}})
     link = m.get("video_url") or m.get("source_url")
+    link = link if link and is_citable(link) else None
     caption: list = [m.get("caption") or ""]
     if link:
         caption += [" ", {"tag": "a", "attrs": {"href": link}, "children": [m.get("publisher") or "источник"]}]
@@ -384,7 +386,7 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str) -> tuple[s
     nodes.append({"tag": "ul", "children": [
         {"tag": "li", "children": [f"[{s.id[1:]}] ", {"tag": "a", "attrs": {"href": s.url}, "children": [s.title or s.url]},
                                    f" — {s.publisher}" + (f", {s.date[:10]}" if s.date else "")]}
-        for s in registry.sources.values()]})
+        for s in registry.sources.values() if s.citable]})
     return title, nodes
 
 

@@ -60,7 +60,8 @@ def minutes_until_peak(dt: datetime) -> float:
 
 
 def fmt_bj(dt: datetime) -> str:
-    return to_bj(dt).strftime("%d.%m.%Y %H:%M") + " (Пекин)"
+    """Published time; the post never says which time zone it is (owner's rule, docs/RULES.md §5)."""
+    return to_bj(dt).strftime("%d.%m.%Y %H:%M")
 
 
 RU_MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",

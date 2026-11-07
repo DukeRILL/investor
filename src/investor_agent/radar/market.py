@@ -167,8 +167,8 @@ def fred_quotes(http: Http, api_key: str, errors: list[str]) -> dict[str, Quote]
                 continue
             last, prev = float(obs[0]["value"]), float(obs[1]["value"])
             out[key] = Quote(key, label, last, round((last - prev) * 100, 1), "bp",
-                             f"дневное изменение, данные на {obs[0]['date']} (FRED публикует с задержкой ~1 день)",
-                             f"{obs[0]['date']}T21:00:00+00:00", "FRED (St. Louis Fed)")
+                             f"дневное изменение, данные на {obs[0]['date']}",
+                             f"{obs[0]['date']}T21:00:00+00:00", "Доходности US Treasuries (дневные данные)")
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{key}: FRED недоступен ({type(exc).__name__})")
     return out

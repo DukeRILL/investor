@@ -149,3 +149,46 @@ def test_quality_helpers():
     assert is_russian("Компания выросла в три раза [S1] ARR")
     assert not is_russian("The company tripled revenue")
     assert count_sentences("Раз. Два! Три? Четыре…") == 4
+
+
+# --- Owner's rule: no Beijing/FRED mentions, citable sources only, max 3 links per paragraph ---
+
+def test_scrub_removes_beijing_and_fred():
+    from investor_agent.quality import forbidden_mentions, scrub_text
+    text = scrub_text("Встреча в 10:00 по Пекину. Время 12:00 (Пекин). По данным FRED, доходность выросла.")
+    assert forbidden_mentions(text) == []
+    assert "10:00." in text and "доходность выросла" in text
+
+
+def test_fmt_bj_has_no_zone_label():
+    from datetime import datetime, timezone
+    from investor_agent.timeutil import fmt_bj
+    assert "Пекин" not in fmt_bj(datetime(2026, 11, 7, 2, 0, tzinfo=timezone.utc))
+
+
+def test_non_citable_sources_are_not_linked():
+    from investor_agent.sources import SourceRegistry, is_citable
+    from investor_agent.textfmt import text_to_nodes, to_tg_html
+    assert not is_citable("https://fred.stlouisfed.org/series/DGS10")
+    assert not is_citable("https://en.wikipedia.org/wiki/Ramp")
+    assert is_citable("https://www.reuters.com/markets/x")
+    reg = SourceRegistry()
+    reg.add("https://fred.stlouisfed.org/series/DGS10")
+    reg.add("https://www.reuters.com/a")
+    html = to_tg_html("Доходность выросла [S1] [S2].", reg)
+    assert "stlouisfed" not in html and "reuters.com" in html
+    assert "stlouisfed" not in str(text_to_nodes("Доходность выросла [S1].", reg))
+
+
+def test_at_most_three_links_per_paragraph():
+    from investor_agent.sources import SourceRegistry
+    from investor_agent.textfmt import text_to_nodes, to_tg_html
+    reg = SourceRegistry()
+    for i in range(5):
+        reg.add(f"https://news{i}.example.com/a")
+    text = "Первый факт [S1] [S2]. Второй [S3] [S4] [S5].\n\nНовый абзац [S4] [S5]."
+    html = to_tg_html(text, reg)
+    first, second = html.split("\n\n")
+    assert first.count("<a ") == 3 and second.count("<a ") == 2
+    nodes = text_to_nodes(text, reg)
+    assert str(nodes[0]).count("'href'") == 3

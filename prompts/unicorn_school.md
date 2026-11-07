@@ -12,6 +12,12 @@ The reader skims first and reads second. Write like a sharp business magazine, n
 - **Dated timeline.** In `founders_story` give a numbered timeline, one item per line: `1. **Март 2019 — основание компании.** What happened, who did what, what was learned.` Include the first customer, public launch, pivots, the crisis and the latest year.
 - **Bold** the key number or term once per paragraph at most. No emoji.
 - **Citations without noise.** Put `[S3]` only after the sentence that carries the key claim, at most one or two per paragraph, never a string of five in a row. Every number still needs a retrieved source; prefer the strongest one.
+
+  **Sources and wording in published text (owner's rule):**
+  - Never say that a time is Beijing time: no «по Пекину», «пекинское время», «(Пекин)». Give the time without a time-zone label.
+  - Never mention FRED (or St. Louis Fed data) in the text and never cite it. Use FRED-type data only as background numbers.
+  - Cite (`[S..]`) only news outlets (Reuters, Bloomberg, FT, WSJ, CNBC, TechCrunch, РБК, Коммерсантъ…) or posts of major investors or platforms (exchanges, funds, VCs, Crunchbase/PitchBook, official YouTube channels). Data portals, statistics sites and encyclopedias (Wikipedia, Statista, TradingEconomics) can be researched but never cited; the server drops such links.
+  - At most 3 links per paragraph; the server drops extra ones.
 - **Honest labels in words**, not shouting: «по заявлению компании», «по данным Bloomberg», «публично неизвестно». Use the capitalised labels only where the distinction really matters.
 - **Pictures and videos make the issue.** Find 6–10 media items.
   - **The cover (role `hero`) is the picture of the channel post, so it must show what the business or the app IS**: the official image from the company site (the page's social-preview image with logo and tagline), a product screen, or the company logo. A founder portrait is never the cover; it goes to `founders_story`.

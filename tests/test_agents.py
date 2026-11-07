@@ -150,7 +150,7 @@ def test_format_alert_sections_and_disclaimer():
     text = "\n".join(parts)
     for heading in ("ФАКТ", "ГИПОТЕЗА", "НЕИЗВЕСТНО", "ПРОСТЫМИ СЛОВАМИ — ЧТО ЭТО ЗНАЧИТ И МОЙ ПРОГНОЗ"):
         assert heading in text
-    assert radar.DISCLAIMER in text and "(Пекин)" in text
+    assert radar.DISCLAIMER in text and "(Пекин)" not in text
     reg2 = SourceRegistry()
     assert radar.DISCLAIMER not in "\n".join(radar.format_alert(alert_json(reg2, action="wait"), reg2, snap(), NOW))
 

@@ -3,7 +3,8 @@
 import re
 from html import escape
 
-from .sources import CITE_RE, SourceRegistry
+from .quality import scrub_text
+from .sources import CITE_RE, SourceRegistry, cap_citations
 
 TG_LIMIT = 4096
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
@@ -12,7 +13,7 @@ BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
 def _cite_html(text: str, registry: SourceRegistry | None) -> str:
     def repl(m: re.Match) -> str:
         src = registry.get(m.group(1)) if registry else None
-        if not src:
+        if not src or not src.citable:
             return ""
         return f'<a href="{escape(src.url, quote=True)}">[{escape(src.publisher or src.id)}]</a>'
     return CITE_RE.sub(repl, text)
@@ -20,7 +21,7 @@ def _cite_html(text: str, registry: SourceRegistry | None) -> str:
 
 def to_tg_html(text: str, registry: SourceRegistry | None = None) -> str:
     """Escape everything, then re-apply bold and source links."""
-    html = escape(text or "", quote=False)
+    html = escape(cap_citations(scrub_text(text or ""), registry), quote=False)
     html = BOLD_RE.sub(lambda m: f"<b>{m.group(1)}</b>", html)
     html = _cite_html(html, registry)
     html = re.sub(r"[ \t]+\n", "\n", html)
@@ -109,7 +110,7 @@ def _inline_nodes(text: str, registry: SourceRegistry | None, cite: str = "publi
             nodes.append({"tag": "b", "children": [m.group(1)]})
         else:
             src = registry.get(m.group(2)) if registry else None
-            if src:
+            if src and src.citable:
                 label = src.id[1:] if cite == "number" else (src.publisher or src.id)
                 nodes.append({"tag": "a", "attrs": {"href": src.url}, "children": [f"[{label}]"]})
         pos = m.end()
@@ -122,7 +123,8 @@ def text_to_nodes(text: str, registry: SourceRegistry | None = None, cite: str =
     """Paragraphs -> <p>, '• ' lines -> <ul>, '1. ' lines -> <ol>, '### ' lines -> <h4>.
     cite='number' renders [S12] as a short numbered link [12] instead of the publisher name."""
     nodes: list = []
-    for para in re.split(r"\n\s*\n", (text or "").strip()):
+    text = cap_citations(scrub_text(text or ""), registry)
+    for para in re.split(r"\n\s*\n", text.strip()):
         lines = [ln.strip() for ln in para.split("\n") if ln.strip()]
         bullets: list = []
         numbered: list = []
