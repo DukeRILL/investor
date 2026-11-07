@@ -72,7 +72,7 @@ def _split_long(block: str, limit: int) -> list[str]:
 
 # --- Telegraph -------------------------------------------------------------------------------
 
-def _inline_nodes(text: str, registry: SourceRegistry | None) -> list:
+def _inline_nodes(text: str, registry: SourceRegistry | None, cite: str = "publisher") -> list:
     nodes: list = []
     pos = 0
     pattern = re.compile(r"\*\*(.+?)\*\*|\[(S\d+)\]", re.S)
@@ -84,40 +84,58 @@ def _inline_nodes(text: str, registry: SourceRegistry | None) -> list:
         else:
             src = registry.get(m.group(2)) if registry else None
             if src:
-                nodes.append({"tag": "a", "attrs": {"href": src.url}, "children": [f"[{src.publisher or src.id}]"]})
+                label = src.id[1:] if cite == "number" else (src.publisher or src.id)
+                nodes.append({"tag": "a", "attrs": {"href": src.url}, "children": [f"[{label}]"]})
         pos = m.end()
     if pos < len(text):
         nodes.append(text[pos:])
     return nodes
 
 
-def text_to_nodes(text: str, registry: SourceRegistry | None = None) -> list:
-    """Paragraphs -> <p>, runs of '• ' lines -> <ul>."""
+def text_to_nodes(text: str, registry: SourceRegistry | None = None, cite: str = "publisher") -> list:
+    """Paragraphs -> <p>, '• ' lines -> <ul>, '1. ' lines -> <ol>, '### ' lines -> <h4>.
+    cite='number' renders [S12] as a short numbered link [12] instead of the publisher name."""
     nodes: list = []
     for para in re.split(r"\n\s*\n", (text or "").strip()):
         lines = [ln.strip() for ln in para.split("\n") if ln.strip()]
         bullets: list = []
+        numbered: list = []
         buffer: list[str] = []
 
         def flush_buffer():
             if buffer:
-                nodes.append({"tag": "p", "children": _inline_nodes("\n".join(buffer), registry)})
+                nodes.append({"tag": "p", "children": _inline_nodes("\n".join(buffer), registry, cite)})
                 buffer.clear()
 
-        def flush_bullets():
+        def flush_lists():
             if bullets:
                 nodes.append({"tag": "ul", "children": list(bullets)})
                 bullets.clear()
+            if numbered:
+                nodes.append({"tag": "ol", "children": list(numbered)})
+                numbered.clear()
 
         for line in lines:
-            if line.startswith(("• ", "- ", "* ")):
+            ordered = re.match(r"^\d{1,2}[.)]\s+(.*)", line)
+            if line.startswith("### "):
                 flush_buffer()
-                bullets.append({"tag": "li", "children": _inline_nodes(line[2:], registry)})
+                flush_lists()
+                nodes.append({"tag": "h4", "children": _inline_nodes(line[4:], registry, cite)})
+            elif line.startswith(("• ", "- ", "* ")):
+                flush_buffer()
+                if numbered:
+                    flush_lists()
+                bullets.append({"tag": "li", "children": _inline_nodes(line[2:], registry, cite)})
+            elif ordered:
+                flush_buffer()
+                if bullets:
+                    flush_lists()
+                numbered.append({"tag": "li", "children": _inline_nodes(ordered.group(1), registry, cite)})
             else:
-                flush_bullets()
+                flush_lists()
                 buffer.append(line)
         flush_buffer()
-        flush_bullets()
+        flush_lists()
     return nodes
 
 

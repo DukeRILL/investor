@@ -1,9 +1,12 @@
 """Thin HTTP layer so business logic can be tested with fakes."""
 
+import ipaddress
 import json
 import logging
+import socket
 import time
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
@@ -14,9 +17,29 @@ class HttpError(RuntimeError):
         self.status = status
 
 
+def is_public_url(url: str) -> bool:
+    """True for http(s) URLs whose host resolves only to public addresses (blocks localhost/LAN/metadata)."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return False
+    return bool(infos)
+
+
 class Http(Protocol):
     def request(self, method: str, url: str, *, json_body: Any = None, params: dict | None = None,
                 headers: dict | None = None, timeout: float = 60) -> Any: ...
+
+    def get_bytes(self, url: str, max_bytes: int = 6_000_000, timeout: float = 30) -> tuple[bytes, str]: ...
+
+    def post_file(self, url: str, filename: str, data: bytes, content_type: str, timeout: float = 60) -> Any: ...
 
 
 class HttpxClient:
@@ -47,6 +70,28 @@ class HttpxClient:
             except ValueError:
                 return response.text
         raise HttpError(599, "retries exhausted")
+
+    def get_bytes(self, url: str, max_bytes: int = 6_000_000, timeout: float = 30) -> tuple[bytes, str]:
+        """Download a public file (image or HTML) with a size cap. Returns (body, lower-case content type)."""
+        if not is_public_url(url):
+            raise HttpError(400, "url is not a public http(s) address")
+        with self._client.stream("GET", url, timeout=timeout) as response:
+            if response.status_code >= 400:
+                raise HttpError(response.status_code, "download failed")
+            if not is_public_url(str(response.url)):  # redirected somewhere private
+                raise HttpError(400, "redirect to a non-public address")
+            body = bytearray()
+            for chunk in response.iter_bytes():
+                body.extend(chunk)
+                if len(body) > max_bytes:
+                    raise HttpError(413, "file is too large")
+            return bytes(body), response.headers.get("content-type", "").split(";")[0].strip().lower()
+
+    def post_file(self, url: str, filename: str, data: bytes, content_type: str, timeout: float = 60) -> Any:
+        response = self._client.post(url, files={"file": (filename, data, content_type)}, timeout=timeout)
+        if response.status_code >= 400:
+            raise HttpError(response.status_code, response.text)
+        return response.json()
 
     def close(self) -> None:
         self._client.close()

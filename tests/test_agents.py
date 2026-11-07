@@ -41,7 +41,11 @@ def good_report(registry):
     return {"company_name": "Acme", "industry": "финтех", "country": "США", "usefulness_score": 8,
             "teaser": "Acme выросла до 100 млн долларов ARR за три года [S1].", "sections": sections,
             "rounds": [{"date": "2025-03", "stage": "Series B", "amount": "USD 60 млн", "source": "S2"}],
-            "media": [{"source": "S3", "kind": "video", "caption": "Интервью основателя"}], "unknowns": ["Доли основателей"]}
+            "subtitle": "Как Acme выросла до 100 млн долларов",
+            "metrics": [{"label": f"Метрика {i}", "value": f"{i} млн", "note": "2026", "source": "S1"} for i in range(4)],
+            "verdict_scores": [{"score": 9, "label": x} for x in ("Боль", "Рост", "Защита", "Воспроизводимость")],
+            "media": [{"source": f"S{i}", "kind": "photo", "section": "founders_story", "caption": f"Фото {i}"}
+                      for i in range(1, 6)], "unknowns": ["Доли основателей"]}
 
 
 def test_prepare_and_publish_full_cycle(make_app):

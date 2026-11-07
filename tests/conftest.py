@@ -23,6 +23,13 @@ class FakeTelegram:
         self.sent.append({"chat": chat_id, "html": html, "button": button})
         return len(self.sent)
 
+    def send_photo(self, chat_id, photo_url, html, button=None):
+        from investor_agent.telegram import TelegramError
+        if self.fail:
+            raise TelegramError("sendPhoto failed: test")
+        self.sent.append({"chat": chat_id, "html": html, "button": button, "photo": photo_url})
+        return len(self.sent)
+
     def send_series(self, chat_id, parts, button=None):
         return [self.send(chat_id, p) for p in parts]
 
@@ -37,7 +44,10 @@ class FakeTelegraph:
 
     def create_page(self, title, nodes):
         self.pages.append((title, nodes))
-        return "https://telegra.ph/test-page"
+        return f"https://telegra.ph/test-page-{len(self.pages)}" if len(self.pages) > 1 else "https://telegra.ph/test-page"
+
+    def upload_image(self, data, content_type):
+        return "https://telegra.ph/file/test.jpg"
 
 
 class FakeDeepSeek:
@@ -58,10 +68,23 @@ class FakeDeepSeek:
 
 @pytest.fixture
 def make_app(tmp_path):
-    def _make(deepseek=None, telegram=None, mode="auto", admin="111"):
+    def _make(deepseek=None, telegram=None, mode="auto", admin="111", http=None):
         settings = Settings(database_path=tmp_path / "db.sqlite3", publish_mode=mode, telegram_admin_chat_id=admin,
                             deepseek_api_key="k", telegram_bot_token="t")
-        return App(settings=settings, http=None, store=Store(settings.database_path),
+        return App(settings=settings, http=http, store=Store(settings.database_path),
                    deepseek=deepseek or FakeDeepSeek([]), telegram=telegram or FakeTelegram(),
                    telegraph=FakeTelegraph())
     return _make
+
+
+class FakeHttp:
+    """Serves files from a dict {url: (bytes, content_type)} for get_bytes; everything else is 404."""
+
+    def __init__(self, files=None):
+        self.files = files or {}
+
+    def get_bytes(self, url, max_bytes=6_000_000, timeout=30):
+        from investor_agent.http import HttpError
+        if url not in self.files:
+            raise HttpError(404, "not found")
+        return self.files[url]

@@ -1,15 +1,19 @@
 """Unicorn School: prepare a report at night (off-peak), publish at 10:00 Beijing."""
 
+import json
 import logging
 import re
 from datetime import datetime
 from html import escape
 
 from ..app import App
+from ..chart import render_chart
+from ..media import resolve_media
 from ..quality import count_sentences, is_russian
 from ..sources import CITE_RE, SourceRegistry
 from ..storage import norm_name
-from ..textfmt import table_nodes, text_to_nodes, to_tg_html
+from ..telegram import TelegramError
+from ..textfmt import table_nodes, text_to_nodes, to_tg_html, visible_len
 from ..timeutil import PeakHoursError, now_bj, ru_date
 
 log = logging.getLogger(__name__)
@@ -25,6 +29,9 @@ SECTION_TITLES = {
     "investor_verdict": "Инвесторский вердикт", "essence": "Суть в пяти предложениях",
 }
 MIN_VERIFIED_SOURCES = 5
+MIN_MEDIA_NOMINATED = 5  # photos and videos the model must propose; unusable ones are dropped by media.py
+TELEGRAPH_PAGE_BYTES = 58_000  # Telegraph rejects content over 64 KB; keep a margin
+CAPTION_LIMIT = 1000  # Telegram caption limit is 1024
 EXCLUDED_INDUSTRIES = ("oil", "gas", "mining", "defense", "defence", "нефт", "газ", "оборон")
 
 
@@ -107,6 +114,15 @@ def validate_report(report: dict, registry: SourceRegistry) -> list[str]:
         errors.append("text must be in Russian")
     if report.get("teaser") and not is_russian(report["teaser"]):
         errors.append("teaser must be in Russian")
+    metrics = [m for m in report.get("metrics") or [] if isinstance(m, dict) and m.get("label") and m.get("value")]
+    if len(metrics) < 3:
+        errors.append("metrics: give 4 headline numbers, each with label, value and note")
+    scores = [x for x in report.get("verdict_scores") or [] if isinstance(x, dict) and x.get("label")]
+    if len(scores) != 4:
+        errors.append("verdict_scores: give exactly 4 scores out of 10 with labels")
+    if len([m for m in report.get("media") or [] if isinstance(m, dict)]) < MIN_MEDIA_NOMINATED:
+        errors.append(f"media: nominate at least {MIN_MEDIA_NOMINATED} photos and videos from pages you opened "
+                      "(founder photos, product screens, interviews, demos)")
     verified = registry.verified(registry.cited_ids(all_text))
     if len(verified) < MIN_VERIFIED_SOURCES:
         errors.append(f"only {len(verified)} cited sources were actually opened with fetch_page; "
@@ -180,6 +196,7 @@ def _prepare(app: App, today: str) -> str:
         raise UnicornError("разбор не прошёл проверку: " + "; ".join(errors))
 
     report["company_name"] = report.get("company_name") or chosen["name"]
+    _attach_media(app, report, registry)
     all_text = "\n".join(x.get("body", "") for x in report["sections"])
     used = set(registry.cited_ids(all_text, report.get("teaser", "")))
     used |= {m.get("source") for m in report.get("media") or [] if registry.get(str(m.get("source", "")))}
@@ -190,6 +207,26 @@ def _prepare(app: App, today: str) -> str:
         "rejected": payload["rejected"], "sources": registry.brief(sorted(used, key=lambda x: int(x[1:]))),
     })
     return "ready"
+
+
+def _attach_media(app: App, report: dict, registry: SourceRegistry) -> None:
+    """Find real pictures for the nominated media and draw the chart. Failures only make the issue plainer."""
+    try:
+        report["media_resolved"] = resolve_media(report.get("media") or [], registry, app.http,
+                                                 app.telegraph.upload_image)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("media resolution failed: %s", type(exc).__name__)
+        report["media_resolved"] = []
+    chart = report.get("chart") or {}
+    try:
+        png = render_chart(chart.get("points") or [], chart.get("unit", "")) if chart else None
+        report["chart_image"] = app.telegraph.upload_image(png, "image/png") if png else None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("chart image failed: %s", type(exc).__name__)
+        report["chart_image"] = None
+    kinds = [m["kind"] for m in report["media_resolved"]]
+    log.info("media: %d photos, %d videos, %d pages; chart image: %s", kinds.count("photo"), kinds.count("video"),
+             kinds.count("page"), bool(report["chart_image"]))
 
 
 def _registry_from(sources: list[dict]) -> SourceRegistry:
@@ -206,46 +243,153 @@ def _registry_from(sources: list[dict]) -> SourceRegistry:
     return reg
 
 
+def _cite(registry: SourceRegistry, sid) -> dict | None:
+    src = registry.get(str(sid or ""))
+    return {"tag": "a", "attrs": {"href": src.url}, "children": [f"[{src.id[1:]}]"]} if src else None
+
+
+def _figure(m: dict) -> dict:
+    inner = ({"tag": "img", "attrs": {"src": m["src"]}} if m["kind"] == "photo"
+             else {"tag": "iframe", "attrs": {"src": m["embed"]}})
+    link = m.get("video_url") or m.get("source_url")
+    caption: list = [m.get("caption") or ""]
+    if link:
+        caption += [" ", {"tag": "a", "attrs": {"href": link}, "children": [m.get("publisher") or "источник"]}]
+    return {"tag": "figure", "children": [inner, {"tag": "figcaption", "children": caption}]}
+
+
+def _interleave(body: list, figures: list) -> list:
+    """Spread figures through the section instead of stacking them under the heading."""
+    if not figures:
+        return body
+    step = max(1, len(body) // (len(figures) + 1))
+    out, queue = [], list(figures)
+    for i, node in enumerate(body, 1):
+        out.append(node)
+        if queue and i % step == 0:
+            out.append(queue.pop(0))
+    return out + queue
+
+
+def hero_photo(report: dict) -> dict | None:
+    photos = [m for m in report.get("media_resolved") or [] if m.get("kind") == "photo"]
+    return next((m for m in photos if m.get("role") == "hero"), photos[0] if photos else None)
+
+
 def build_page(report: dict, registry: SourceRegistry, date_str: str) -> tuple[str, list]:
     title = f"ШКОЛА ЕДИНОРОГОВ — {date_str}. КОМПАНИЯ ДНЯ: {report['company_name']}"
-    nodes: list = [{"tag": "p", "children": [{"tag": "i", "children": [
-        f"Оценка полезности кейса: {report.get('usefulness_score', '—')}/10. "
-        "Материал образовательный, не является инвестиционной рекомендацией."]}]}]
+    media = report.get("media_resolved") or []
+    hero = hero_photo(report)
+    nodes: list = []
+    if report.get("subtitle"):
+        nodes.append({"tag": "p", "children": [{"tag": "b", "children": [report["subtitle"]]}]})
+    if report.get("facts_line"):
+        nodes.append({"tag": "p", "children": [report["facts_line"]]})
+    nodes.append({"tag": "p", "children": [{"tag": "i", "children": [
+        f"Оценка полезности кейса: {report.get('usefulness_score', '—')}/10 (редакционная оценка). "
+        "Материал образовательный, не является инвестиционной рекомендацией."]}]})
+    if hero:
+        nodes.append(_figure(hero))
+    photos: dict[str, list] = {}
+    for m in media:
+        if m["kind"] == "photo" and m is not hero:
+            sid = m.get("section") if m.get("section") in SECTION_IDS else "founders_story"
+            photos.setdefault(sid, []).append(_figure(m))
     for section in report["sections"]:
         sid = section.get("id")
         nodes.append({"tag": "h3", "children": [section.get("title") or SECTION_TITLES.get(sid, sid)]})
-        nodes.extend(text_to_nodes(section.get("body", ""), registry))
+        if sid == "summary":
+            for metric in report.get("metrics") or []:
+                line: list = [{"tag": "b", "children": [str(metric.get("value"))]}, f" — {metric.get('label')}"]
+                if metric.get("note"):
+                    line += [{"tag": "br"}, {"tag": "i", "children": [str(metric["note"])]}]
+                cite = _cite(registry, metric.get("source"))
+                if cite:
+                    line += [" ", cite]
+                nodes.append({"tag": "p", "children": line})
+        if sid == "investor_verdict" and report.get("verdict_scores"):
+            nodes.append({"tag": "ul", "children": [
+                {"tag": "li", "children": [{"tag": "b", "children": [f"{x.get('score')}/10"]}, f" — {x.get('label')}"]}
+                for x in report["verdict_scores"]]})
+        body = text_to_nodes(section.get("body", ""), registry, cite="number")
+        nodes.extend(_interleave(body, photos.get(sid, [])))
         if sid == "traction" and report.get("chart") and report["chart"].get("points"):
             ch = report["chart"]
             src = registry.get(str(ch.get("source", "")))
-            rows = [[p.get("label"), f"{p.get('value')} {ch.get('unit', '')}".strip()] for p in ch["points"]]
-            nodes.append({"tag": "p", "children": [{"tag": "b", "children": [ch.get("title", "Динамика")]}]})
-            nodes.extend(table_nodes(["Период", "Значение"], rows))
-            if src:
-                nodes.append({"tag": "p", "children": ["Источник: ", {"tag": "a", "attrs": {"href": src.url},
-                                                                       "children": [src.publisher]}]})
+            if report.get("chart_image"):
+                caption: list = [ch.get("title", "Динамика"), f" ({ch['unit']})" if ch.get("unit") else ""]
+                if src:
+                    caption += [". Источник: ", {"tag": "a", "attrs": {"href": src.url}, "children": [src.publisher]}]
+                nodes.append({"tag": "figure", "children": [{"tag": "img", "attrs": {"src": report["chart_image"]}},
+                                                            {"tag": "figcaption", "children": caption}]})
+            else:
+                rows = [[p.get("label"), f"{p.get('value')} {ch.get('unit', '')}".strip()] for p in ch["points"]]
+                nodes.append({"tag": "p", "children": [{"tag": "b", "children": [ch.get("title", "Динамика")]}]})
+                nodes.extend(table_nodes(["Период", "Значение"], rows))
+                if src:
+                    nodes.append({"tag": "p", "children": ["Источник: ", {"tag": "a", "attrs": {"href": src.url},
+                                                                           "children": [src.publisher]}]})
         if sid == "capital_equity" and report.get("rounds"):
             headers = ["Раунд", "Сумма", "Pre-money", "Post-money", "Лид", "Другие", "Тип"]
             rows = [[f"{r.get('date', '')} · {r.get('stage', '')}", r.get("amount"), r.get("pre_money"),
                      r.get("post_money"), r.get("lead"), r.get("others"), r.get("type")] for r in report["rounds"]]
             nodes.append({"tag": "p", "children": [{"tag": "b", "children": ["Раунды финансирования"]}]})
             nodes.extend(table_nodes(headers, rows))
-    media = [m for m in report.get("media") or [] if registry.get(str(m.get("source", "")))]
-    if media:
-        nodes.append({"tag": "h3", "children": ["Фото, видео и материалы"]})
-        nodes.append({"tag": "ul", "children": [
-            {"tag": "li", "children": [{"tag": "a", "attrs": {"href": registry.get(m["source"]).url},
-                                        "children": [m.get("caption") or registry.get(m["source"]).title]}]}
-            for m in media]})
+        if sid == "build_yourself":
+            extras = [m for m in media if m["kind"] in ("video", "page")]
+            if extras:
+                nodes.append({"tag": "h3", "children": ["Интервью, видео и материалы"]})
+                for m in extras:
+                    if m["kind"] == "video":
+                        nodes.append(_figure(m))
+                    else:
+                        nodes.append({"tag": "p", "children": [{"tag": "a", "attrs": {"href": m["source_url"]},
+                                                                "children": [m.get("caption") or m["source_url"]]}]})
     if report.get("unknowns"):
         nodes.append({"tag": "h3", "children": ["Что публично неизвестно"]})
         nodes.append({"tag": "ul", "children": [{"tag": "li", "children": [u]} for u in report["unknowns"]]})
     nodes.append({"tag": "h3", "children": ["Источники"]})
-    nodes.append({"tag": "ol", "children": [
-        {"tag": "li", "children": [{"tag": "a", "attrs": {"href": s.url}, "children": [s.title or s.url]},
+    nodes.append({"tag": "ul", "children": [
+        {"tag": "li", "children": [f"[{s.id[1:]}] ", {"tag": "a", "attrs": {"href": s.url}, "children": [s.title or s.url]},
                                    f" — {s.publisher}" + (f", {s.date[:10]}" if s.date else "")]}
         for s in registry.sources.values()]})
     return title, nodes
+
+
+def _size(nodes: list) -> int:
+    return len(json.dumps(nodes, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def paginate(nodes: list, limit: int = TELEGRAPH_PAGE_BYTES) -> list[list]:
+    """Split page content into parts under Telegraph's 64 KB cap, cutting only before section headings."""
+    groups: list[list] = [[]]
+    for node in nodes:
+        if node.get("tag") == "h3" and groups[-1]:
+            groups.append([])
+        groups[-1].append(node)
+    pages: list[list] = [[]]
+    for group in groups:
+        if pages[-1] and _size(pages[-1] + group) > limit:
+            pages.append([])
+        for node in group:  # a single oversized section is cut between its blocks
+            if pages[-1] and _size(pages[-1] + [node]) > limit:
+                pages.append([])
+            pages[-1].append(node)
+    return pages
+
+
+def create_pages(telegraph, title: str, nodes: list) -> str:
+    """Create one Telegraph page, or a chain of linked parts when the issue is long. Returns the first URL."""
+    pages = paginate(nodes)
+    next_url = None
+    for index in range(len(pages) - 1, -1, -1):
+        content = list(pages[index])
+        if next_url:
+            content.append({"tag": "p", "children": [{"tag": "a", "attrs": {"href": next_url},
+                                                      "children": [f"Продолжение: часть {index + 2} →"]}]})
+        page_title = title if index == 0 else f"{title} — часть {index + 1}"
+        next_url = telegraph.create_page(page_title, content)
+    return next_url
 
 
 def build_post(report: dict, date_str: str) -> str:
@@ -254,6 +398,19 @@ def build_post(report: dict, date_str: str) -> str:
             f"<b>Компания дня: {escape(report['company_name'])}</b>\n\n"
             f"{teaser}\n\n"
             f"⏱ Полный разбор — 10–15 минут чтения")
+
+
+def _send_post(app: App, report: dict, date_str: str, url: str) -> int:
+    """Lead photo with the teaser as caption when there is one; plain text post otherwise."""
+    html = build_post(report, date_str)
+    button = ("📖 Читать разбор", url)
+    hero = hero_photo(report)
+    if hero and visible_len(html) <= CAPTION_LIMIT:
+        try:
+            return app.telegram.send_photo(app.target_chat(), hero["src"], html, button=button)
+        except TelegramError as exc:
+            log.warning("photo post failed (%s); sending text", exc)
+    return app.telegram.send(app.target_chat(), html, button=button)
 
 
 def publish(app: App, today: str | None = None) -> str:
@@ -270,9 +427,9 @@ def publish(app: App, today: str | None = None) -> str:
     registry = _registry_from(payload["sources"])
     date_str = ru_date(datetime.fromisoformat(today))
     try:
-        url = draft.get("page_url") or app.telegraph.create_page(*build_page(report, registry, date_str))
+        url = draft.get("page_url") or create_pages(app.telegraph, *build_page(report, registry, date_str))
         app.store.draft_mark(today, "ready", page_url=url)
-        mid = app.telegram.send(app.target_chat(), build_post(report, date_str), button=("📖 Читать разбор", url))
+        mid = _send_post(app, report, date_str, url)
     except Exception as exc:  # noqa: BLE001
         app.store.draft_mark(today, "ready", error=str(exc)[:500])
         app.notify_admin(f"Школа единорогов: публикация {today} не удалась: {exc}")
