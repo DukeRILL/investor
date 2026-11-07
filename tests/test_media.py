@@ -239,7 +239,8 @@ def test_one_issue_is_exactly_one_chat_message(make_app):
     app = _app_with_report(make_app)
     unicorn.prepare(app, "2026-11-09")
     assert unicorn.publish(app, "2026-11-09") == "published"
-    posts = lambda: [m for m in app.telegram.sent if "html" in m]  # the readers' poll that follows is not a post
+    # the readers' poll and the pinned glossary post are separate standing posts, not part of the issue
+    posts = lambda: [m for m in app.telegram.sent if "html" in m and "ГЛОССАРИЙ" not in m["html"]]
     assert len(posts()) == 1
     assert unicorn.publish(app, "2026-11-09") == "already_published" and len(posts()) == 1
     assert unicorn.visible_len(app.telegram.sent[0]["html"]) <= unicorn.CAPTION_LIMIT

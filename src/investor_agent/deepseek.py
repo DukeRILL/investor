@@ -3,17 +3,18 @@
 Every call goes through the off-peak guard (docs/RULES.md, rule 1).
 """
 
+import hashlib
 import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .http import Http, HttpError
 from .sources import SourceRegistry
-from .timeutil import PeakHoursError, is_peak, minutes_until_peak, now_bj
+from .timeutil import BEIJING, PeakHoursError, is_peak, minutes_until_peak, now_bj
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +24,10 @@ PRICES = {
     "deepseek-v4-pro": {"hit": 0.022, "miss": 0.66, "out": 1.98},
 }
 TOOL_PRICE = 0.75 / 1000  # per successful search or fetch
+
+
+class BudgetExceededError(RuntimeError):
+    """The day's DeepSeek spend passed the hard limit (2 x DAILY_BUDGET_USD); calls stop until tomorrow."""
 
 
 @dataclass
@@ -81,9 +86,11 @@ AGENT_TOOLS = [
 
 class DeepSeekClient:
     def __init__(self, http: Http, api_key: str, base_url: str = "https://api.deepseek.com",
-                 clock: Callable[[], datetime] = now_bj, enforce_offpeak: bool = True):
+                 clock: Callable[[], datetime] = now_bj, enforce_offpeak: bool = True,
+                 store=None, daily_budget_usd: float = 0.0):
         self.http, self.api_key, self.base_url = http, api_key, base_url.rstrip("/")
         self.clock, self.enforce_offpeak = clock, enforce_offpeak
+        self.store, self.daily_budget_usd = store, daily_budget_usd
         self.usage = Usage()
         self.invalid_retries, self.invalid_retry_delay = 3, 5.0
 
@@ -91,11 +98,23 @@ class DeepSeekClient:
     def _guard(self, min_minutes: float = 0) -> None:
         if not self.api_key:
             raise RuntimeError("DEEPSEEK_API_KEY is not configured")
-        if not self.enforce_offpeak:
-            return
-        now = self.clock()
-        if is_peak(now) or minutes_until_peak(now) < min_minutes:
-            raise PeakHoursError(f"DeepSeek is not called during peak hours (now {now:%a %H:%M} Beijing)")
+        if self.enforce_offpeak:
+            now = self.clock()
+            if is_peak(now) or minutes_until_peak(now) < min_minutes:
+                raise PeakHoursError(f"DeepSeek is not called during peak hours (now {now:%a %H:%M} Beijing)")
+        self._budget_guard()
+
+    def spent_today(self) -> float:
+        """Estimated spend since 00:00 Beijing: finished jobs from the store plus the run in progress."""
+        if not self.store:
+            return self.usage.cost_usd()
+        midnight = self.clock().astimezone(BEIJING).replace(hour=0, minute=0, second=0, microsecond=0)
+        return self.store.usage_since(midnight.astimezone(timezone.utc).isoformat(timespec="seconds")) + self.usage.cost_usd()
+
+    def _budget_guard(self) -> None:
+        if self.daily_budget_usd > 0 and self.spent_today() >= 2 * self.daily_budget_usd:
+            raise BudgetExceededError(f"daily DeepSeek budget exhausted (about ${self.spent_today():.2f} today, "
+                                      f"hard limit ${2 * self.daily_budget_usd:.2f})")
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
@@ -125,22 +144,48 @@ class DeepSeekClient:
                 time.sleep(self.invalid_retry_delay * attempt)
         raise HttpError(502, f"DeepSeek returned an invalid chat response: {type(data).__name__} {snippet}")
 
-    def search(self, query: str, count: int = 8) -> list[dict]:
-        self._guard(min_minutes=1)
+    # --- cache: same query/page within `cache_ttl` hours is not paid for twice (retries of a failed issue) ----
+    def _cache_get(self, key: str, ttl: float):
+        if not (self.store and ttl > 0):
+            return None
+        raw = self.store.cache_get(key, ttl)
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+
+    def _cache_put(self, key: str, value, ttl: float) -> None:
+        if self.store and ttl > 0:
+            self.store.cache_put(key, json.dumps(value, ensure_ascii=False, default=str))
+
+    def search(self, query: str, count: int = 8, cache_ttl: float = 0) -> list[dict]:
         body = {"query": query[:128], "count": max(1, min(int(count or 8), 20))}
+        key = "search:" + hashlib.sha1(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        cached = self._cache_get(key, cache_ttl)
+        if cached is not None:
+            return cached
+        self._guard(min_minutes=1)
         data = self.http.request("POST", f"{self.base_url}/v1/tools/search", json_body=body,
                                  headers=self._headers(), timeout=60)
         results = data.get("results") or []
         if results:
             self.usage.searches += 1
+            self._cache_put(key, results, cache_ttl)
         return results
 
-    def fetch(self, url: str) -> dict:
+    def fetch(self, url: str, cache_ttl: float = 0) -> dict:
+        key = "fetch:" + hashlib.sha1(url.encode()).hexdigest()
+        cached = self._cache_get(key, cache_ttl)
+        if cached is not None:
+            return cached
         self._guard(min_minutes=1)
         data = self.http.request("POST", f"{self.base_url}/v1/tools/fetch", json_body={"url": url},
                                  headers=self._headers(), timeout=90)
         if data.get("content"):
             self.usage.fetches += 1
+            self._cache_put(key, data, cache_ttl)
         return data
 
     def balance(self) -> dict:
@@ -157,7 +202,8 @@ class DeepSeekClient:
         return parse_json(message.get("content") or "")
 
     def research(self, model: str, system: str, payload: Any, registry: SourceRegistry,
-                 max_tool_calls: int = 40, page_chars: int = 12000, temperature: float = 0.3) -> dict:
+                 max_tool_calls: int = 40, page_chars: int = 12000, temperature: float = 0.3,
+                 cache_ttl: float = 0) -> dict:
         """Let the model search and read pages, then return its final JSON answer."""
         messages: list[dict] = [{"role": "system", "content": system},
                                 {"role": "user", "content": _dump(payload)}]
@@ -173,10 +219,10 @@ class DeepSeekClient:
             messages.append({k: v for k, v in message.items() if v is not None})
             for call in tool_calls:
                 calls += 1
-                result = self._run_tool(call, registry, page_chars)
+                result = self._run_tool(call, registry, page_chars, cache_ttl)
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": _dump(result)})
 
-    def _run_tool(self, call: dict, registry: SourceRegistry, page_chars: int) -> Any:
+    def _run_tool(self, call: dict, registry: SourceRegistry, page_chars: int, cache_ttl: float = 0) -> Any:
         fn = call.get("function") or {}
         try:
             args = json.loads(fn.get("arguments") or "{}")
@@ -184,7 +230,7 @@ class DeepSeekClient:
             return {"error": "invalid JSON arguments"}
         try:
             if fn.get("name") == "web_search":
-                results = self.search(args.get("query", ""), args.get("count", 8))
+                results = self.search(args.get("query", ""), args.get("count", 8), cache_ttl)
                 out = []
                 for r in results:
                     if not r.get("url"):
@@ -200,7 +246,7 @@ class DeepSeekClient:
                 url = src.url if src else ref
                 if not url.startswith(("http://", "https://")):
                     return {"error": "unknown source id; search first"}
-                page = self.fetch(url)
+                page = self.fetch(url, cache_ttl)
                 content = page.get("content") or ""
                 if not content:
                     return {"error": "page has no readable content"}

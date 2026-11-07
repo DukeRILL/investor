@@ -30,9 +30,11 @@ class TelegramClient:
         return data["result"]
 
     def send(self, chat_id: str, html: str, button: tuple[str, str] | None = None,
-             disable_preview: bool = True) -> int:
+             disable_preview: bool = True, reply_to: int | None = None) -> int:
         payload = {"chat_id": chat_id, "text": html, "parse_mode": "HTML",
                    "link_preview_options": {"is_disabled": disable_preview}}
+        if reply_to:  # Telegram shows the quoted earlier post above the new one
+            payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
         if button:
             payload["reply_markup"] = {"inline_keyboard": [[{"text": button[0], "url": button[1]}]]}
         return int(self._call("sendMessage", payload)["message_id"])
@@ -51,6 +53,19 @@ class TelegramClient:
             payload["reply_markup"] = {"inline_keyboard": [[{"text": button[0], "url": button[1]}]]}
         self._call("editMessageCaption", payload)
 
+    def edit_text(self, chat_id: str, message_id: int, html: str, button: tuple[str, str] | None = None) -> None:
+        """Change the text of a text post. The button must be passed again or Telegram removes it."""
+        payload = {"chat_id": chat_id, "message_id": message_id, "text": html, "parse_mode": "HTML",
+                   "link_preview_options": {"is_disabled": True}}
+        if button:
+            payload["reply_markup"] = {"inline_keyboard": [[{"text": button[0], "url": button[1]}]]}
+        self._call("editMessageText", payload)
+
+    def pin(self, chat_id: str, message_id: int) -> bool:
+        """Pin silently (the bot needs the 'pin messages' right in the channel)."""
+        return bool(self._call("pinChatMessage", {"chat_id": chat_id, "message_id": message_id,
+                                                  "disable_notification": True}))
+
     def send_poll(self, chat_id: str, question: str, options: list[str]) -> int:
         """Anonymous regular poll (channels allow only anonymous polls)."""
         payload = {"chat_id": chat_id, "question": question, "options": [{"text": o} for o in options],
@@ -64,12 +79,14 @@ class TelegramClient:
     def delete(self, chat_id: str, message_id: int) -> bool:
         return bool(self._call("deleteMessage", {"chat_id": chat_id, "message_id": message_id}))
 
-    def send_series(self, chat_id: str, parts: list[str], button: tuple[str, str] | None = None) -> list[int]:
+    def send_series(self, chat_id: str, parts: list[str], button: tuple[str, str] | None = None,
+                    reply_to: int | None = None) -> list[int]:
         """Send all parts; if one fails, delete the ones already sent so no fragment stays."""
         sent: list[int] = []
         try:
             for i, part in enumerate(parts):
-                sent.append(self.send(chat_id, part, button if i == len(parts) - 1 else None))
+                sent.append(self.send(chat_id, part, button if i == len(parts) - 1 else None,
+                                      reply_to=reply_to if i == 0 else None))
         except TelegramError:
             for mid in sent:
                 try:
@@ -111,6 +128,13 @@ class TelegraphClient:
         if not isinstance(result, list) or not result or not result[0].get("src"):
             raise TelegramError(f"telegraph upload failed: {str(result)[:120]}")
         return "https://telegra.ph" + result[0]["src"]
+
+    def edit_page(self, url: str, title: str, nodes: list) -> str:
+        """Replace the content of a page this account created (the pinned glossary grows this way)."""
+        payload = {"access_token": self._token(), "path": url.rstrip("/").rsplit("/", 1)[-1], "title": title[:256],
+                   "author_name": self.author_name, "author_url": self.author_url,
+                   "content": json.dumps(nodes, ensure_ascii=False, separators=(",", ":")), "return_content": False}
+        return self._call("editPage", payload)["url"]
 
     def create_page(self, title: str, nodes: list) -> str:
         payload = {"access_token": self._token(), "title": title[:256], "author_name": self.author_name,

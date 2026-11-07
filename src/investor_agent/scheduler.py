@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Callable
 
 from .app import App
+from .radar import digest as radar_digest
 from .radar import pipeline as radar
 from .report import send_weekly_report
 from .timeutil import BEIJING, PeakHoursError, is_peak, next_offpeak, now_bj
@@ -17,8 +18,11 @@ from .unicorn import poll as unicorn_poll
 log = logging.getLogger(__name__)
 
 UNICORN_POLL_CLOSE_TIME = unicorn_poll.CLOSE_TIME
-UNICORN_PREPARE_TIMES = ((4, 30), (6, 0), (7, 30))   # 30 min after the poll closes; retries, all before 08:45
+UNICORN_PREPARE_TIMES = ((4, 30),)   # 30 min after the poll closes; NOT earlier, no advance preparation
+UNICORN_RETRY_HOURS = 3              # after a failure: try again every 3 hours (peak windows push it out further)
+UNICORN_RETRY_UNTIL = 22             # no new attempts from 22:00; tomorrow's 04:30 starts the next issue
 UNICORN_PUBLISH_TIME = (10, 0)
+RADAR_DIGEST_TIME = radar_digest.DIGEST_TIME_BEIJING   # 22:00 Moscow
 RADAR_EVERY_HOURS = 3
 WEEKLY_REPORT = (6, 20, 0)   # Sunday 20:00 Beijing
 
@@ -57,6 +61,7 @@ class Job:
     fn: Callable[[], object]
     next_fn: Callable[[datetime], datetime]
     uses_deepseek: bool = True
+    retry_fn: Callable[[object, datetime], datetime | None] | None = None  # result -> time of a retry, or None
     next_run: datetime | None = None
     running: bool = field(default=False)
 
@@ -68,10 +73,13 @@ class Scheduler:
         self.jobs = [
             Job("unicorn_poll_close", lambda: unicorn_poll.close(app, unicorn.issue_date()),
                 lambda n: next_daily(n, (UNICORN_POLL_CLOSE_TIME,)), uses_deepseek=False),
-            Job("unicorn_prepare", lambda: unicorn.prepare(app), lambda n: next_daily(n, UNICORN_PREPARE_TIMES)),
+            Job("unicorn_prepare", lambda: unicorn.prepare(app), lambda n: next_daily(n, UNICORN_PREPARE_TIMES),
+                retry_fn=self._prepare_retry),
             Job("unicorn_publish", lambda: unicorn.publish(app), lambda n: next_daily(n, (UNICORN_PUBLISH_TIME,)),
                 uses_deepseek=False),
             Job("radar", lambda: radar.run(app), next_radar),
+            Job("radar_digest", lambda: radar_digest.run(app), lambda n: next_daily(n, (RADAR_DIGEST_TIME,)),
+                uses_deepseek=False),
             Job("weekly_report", lambda: send_weekly_report(app), next_weekly, uses_deepseek=False),
         ]
         now = clock()
@@ -79,27 +87,52 @@ class Scheduler:
             job.next_run = job.next_fn(now)
         self._catch_up(now)
 
+    def _job(self, name: str) -> Job:
+        return next(j for j in self.jobs if j.name == name)
+
+    def _prepare_retry(self, result: object, now: datetime) -> datetime | None:
+        """A failed night preparation is retried every 3 hours until 22:00 (docs/RULES.md section 2)."""
+        if result != "failed":
+            return None
+        nxt = now + timedelta(hours=UNICORN_RETRY_HOURS)
+        if nxt.date() != now.date() or nxt.hour >= UNICORN_RETRY_UNTIL:
+            self.app.notify_admin("Школа единорогов: выпуск на сегодня не подготовлен, повторных попыток больше нет "
+                                  "(следующая — завтра в 04:30).")
+            return None
+        return nxt
+
     def _catch_up(self, now: datetime) -> None:
-        """After a restart between 10:00 and 22:00, publish today's ready report if it was missed."""
-        if not (10 <= now.hour < 22):
+        """After a restart: publish today's ready report if it was missed; redo a missing or failed preparation."""
+        minutes = now.hour * 60 + now.minute
+        if not (270 <= minutes < UNICORN_RETRY_UNTIL * 60):
             return
         draft = self.app.store.draft_get(unicorn.issue_date(now))
-        if draft and draft["status"] == "ready":
-            next(j for j in self.jobs if j.name == "unicorn_publish").next_run = now
+        if draft and draft["status"] == "ready" and now.hour >= 10:
+            self._job("unicorn_publish").next_run = now
+        elif not draft or draft["status"] == "failed":
+            self._job("unicorn_prepare").next_run = now
 
     def _execute(self, job: Job) -> None:
         try:
             result = job.fn()
             log.info("job %s -> %s", job.name, result)
-            job.next_run = job.next_fn(self.clock())
+            self._after(job, result)
         except PeakHoursError as exc:
             log.info("job %s deferred: %s", job.name, exc)
             job.next_run = next_offpeak(self.clock()) + timedelta(minutes=1)
         except Exception:  # noqa: BLE001
             log.exception("job %s crashed", job.name)
-            job.next_run = job.next_fn(self.clock())
+            self._after(job, "failed")
         finally:
             job.running = False
+
+    def _after(self, job: Job, result: object) -> None:
+        now = self.clock()
+        retry = job.retry_fn(result, now) if job.retry_fn else None
+        job.next_run = retry or job.next_fn(now)
+        # an issue that became ready after 10:00 (a retry) goes out at once, followed by the readers' poll
+        if job.name == "unicorn_prepare" and result == "ready" and now.hour >= 10:
+            self._job("unicorn_publish").next_run = now
 
     def tick(self) -> None:
         now = self.clock()

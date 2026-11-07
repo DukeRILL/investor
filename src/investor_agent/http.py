@@ -42,6 +42,8 @@ class Http(Protocol):
     def post_file(self, url: str, filename: str, data: bytes, content_type: str, timeout: float = 60,
                   fields: dict | None = None) -> Any: ...
 
+    def head(self, url: str, timeout: float = 15) -> int: ...
+
 
 class HttpxClient:
     """Production client (httpx is imported lazily). Retries 408/429/5xx."""
@@ -87,6 +89,12 @@ class HttpxClient:
                 if len(body) > max_bytes:
                     raise HttpError(413, "file is too large")
             return bytes(body), response.headers.get("content-type", "").split(";")[0].strip().lower()
+
+    def head(self, url: str, timeout: float = 15) -> int:
+        """HTTP status of a public URL without downloading it (follows redirects)."""
+        if not is_public_url(url):
+            return 400
+        return self._client.head(url, timeout=timeout).status_code
 
     def post_file(self, url: str, filename: str, data: bytes, content_type: str, timeout: float = 60,
                   fields: dict | None = None) -> Any:

@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass
+from datetime import timezone
 from html import escape
 
 from .config import Settings
@@ -48,7 +49,24 @@ class App:
         cost = usage.cost_usd()
         self.store.usage_add(job, cost, {"models": usage.by_model, "searches": usage.searches, "fetches": usage.fetches})
         self.deepseek.usage = type(usage)()
+        self._budget_alert()
         return cost
+
+    def _budget_alert(self) -> None:
+        """Once per Beijing day: tell the admin when the day's DeepSeek spend passes DAILY_BUDGET_USD."""
+        limit = self.settings.daily_budget_usd
+        if limit <= 0:
+            return
+        from .timeutil import now_bj  # noqa: PLC0415
+
+        now = now_bj()
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+        spent = self.store.usage_since(midnight.isoformat(timespec="seconds"))
+        key = f"budget_alert:{now.date().isoformat()}"
+        if spent >= limit and not self.store.get(key):
+            self.store.set(key, "1")
+            self.notify_admin(f"DeepSeek: расходы за сегодня ≈ ${spent:.2f}, дневной лимит ${limit:.2f}. "
+                              f"При ${2 * limit:.2f} вызовы остановятся до завтра.")
 
 
 def build_app(settings: Settings, http: Http | None = None) -> App:
@@ -60,7 +78,8 @@ def build_app(settings: Settings, http: Http | None = None) -> App:
                                   settings.cloudinary_api_secret)
     return App(
         settings=settings, http=http, store=store,
-        deepseek=DeepSeekClient(http, settings.deepseek_api_key, settings.deepseek_base_url),
+        deepseek=DeepSeekClient(http, settings.deepseek_api_key, settings.deepseek_base_url, store=store,
+                                daily_budget_usd=settings.daily_budget_usd),
         telegram=TelegramClient(http, settings.telegram_bot_token),
         telegraph=TelegraphClient(http, lambda: store.get("telegraph_token"), lambda t: store.set("telegraph_token", t)),
         images=images,

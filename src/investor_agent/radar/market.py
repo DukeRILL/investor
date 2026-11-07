@@ -1,5 +1,6 @@
 """Market snapshot collected by code (DeepSeek never quotes prices from memory)."""
 
+import json
 import logging
 import re
 from dataclasses import asdict, dataclass, field
@@ -132,20 +133,62 @@ YAHOO = {
 }
 
 
-def yahoo_quotes(http: Http, errors: list[str]) -> dict[str, Quote]:
-    out = {}
-    for key, (sym, label) in YAHOO.items():
+YAHOO_HOSTS = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
+YAHOO_CACHE_KEY = "yahoo_last_good"
+YAHOO_CACHE_MAX_HOURS = 12  # an older cached quote is not shown at all
+
+
+def _yahoo_fetch(http: Http, sym: str, key: str, label: str, host: str) -> Quote:
+    d = http.request("GET", f"https://{host}/v8/finance/chart/{sym}",
+                     params={"range": "5d", "interval": "1d"}, timeout=20)
+    meta = d["chart"]["result"][0]["meta"]
+    price = float(meta["regularMarketPrice"])
+    prev = meta.get("previousClose") or meta.get("chartPreviousClose")
+    change = round((price / float(prev) - 1) * 100, 2) if prev else None
+    return Quote(key, label, price, change, "%", "к предыдущему закрытию/расчётной цене",
+                 _ts(meta["regularMarketTime"]), "Yahoo Finance (возможна задержка до 15 мин)")
+
+
+def yahoo_quotes(http: Http, errors: list[str], store=None, now: datetime | None = None) -> dict[str, Quote]:
+    """Yahoo with a second host on failure. When both refuse (429), the last good quote (at most 12 h old) is used
+    and marked as cached; after the first double refusal the rest of the run does not hammer Yahoo."""
+    out: dict[str, Quote] = {}
+    now = now or datetime.now(timezone.utc)
+    cache: dict = {}
+    if store is not None:
         try:
-            d = http.request("GET", f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}",
-                             params={"range": "5d", "interval": "1d"}, timeout=20)
-            meta = d["chart"]["result"][0]["meta"]
-            price = float(meta["regularMarketPrice"])
-            prev = meta.get("previousClose") or meta.get("chartPreviousClose")
-            change = round((price / float(prev) - 1) * 100, 2) if prev else None
-            out[key] = Quote(key, label, price, change, "%", "к предыдущему закрытию/расчётной цене",
-                             _ts(meta["regularMarketTime"]), "Yahoo Finance (возможна задержка до 15 мин)")
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"{key}: Yahoo недоступен ({type(exc).__name__})")
+            cache = json.loads(store.get(YAHOO_CACHE_KEY, "{}"))
+        except ValueError:
+            cache = {}
+    blocked = False
+    for key, (sym, label) in YAHOO.items():
+        quote, last_exc = None, None
+        for host in () if blocked else YAHOO_HOSTS:
+            try:
+                quote = _yahoo_fetch(http, sym, key, label, host)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+        if quote:
+            out[key] = quote
+            cache[key] = asdict(quote)
+            continue
+        if last_exc is not None and getattr(last_exc, "status", None) == 429:
+            blocked = True
+        saved = cache.get(key)
+        if saved:
+            try:
+                age = now - datetime.fromisoformat(saved["observed_at"])
+                if age <= timedelta(hours=YAHOO_CACHE_MAX_HOURS):
+                    out[key] = Quote(**{**saved, "source": saved["source"] + " — последнее удачное значение (кэш)"})
+                    errors.append(f"{key}: Yahoo недоступен, использовано значение из кэша от {saved['observed_at'][:16]}Z")
+                    continue
+            except (ValueError, KeyError, TypeError):
+                pass
+        reason = type(last_exc).__name__ if last_exc is not None else "пропущен после отказа Yahoo"
+        errors.append(f"{key}: Yahoo недоступен ({reason})")
+    if store is not None and out:
+        store.set(YAHOO_CACHE_KEY, json.dumps(cache))
     return out
 
 
@@ -223,7 +266,7 @@ FARSIDE = {"BTC": "https://farside.co.uk/btc/", "ETH": "https://farside.co.uk/et
 
 # --- collect ------------------------------------------------------------------------------
 
-def collect(http: Http, fred_key: str, fetch_page=None, now: datetime | None = None) -> Snapshot:
+def collect(http: Http, fred_key: str, fetch_page=None, now: datetime | None = None, store=None) -> Snapshot:
     now = now or datetime.now(timezone.utc)
     snap = Snapshot(taken_at=now.isoformat(timespec="seconds"), sessions=sessions(now))
     try:
@@ -238,7 +281,7 @@ def collect(http: Http, fred_key: str, fetch_page=None, now: datetime | None = N
         binance_derivatives(http, snap.quotes)
     except Exception as exc:  # noqa: BLE001
         snap.errors.append(f"деривативы Binance недоступны ({type(exc).__name__})")
-    snap.quotes.update(yahoo_quotes(http, snap.errors))
+    snap.quotes.update(yahoo_quotes(http, snap.errors, store, now))
     snap.quotes.update(fred_quotes(http, fred_key, snap.errors))
     if fetch_page:
         for asset, url in FARSIDE.items():

@@ -1,0 +1,234 @@
+"""Owner's improvements of 2026-11-07: Yahoo fallback, retries, fact check, digest, continuation, glossary, cache."""
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from conftest import FakeDeepSeek, FakeHttp, FakeTelegram
+from test_agents import cand, good_report
+
+from investor_agent import glossary
+from investor_agent.deepseek import BudgetExceededError, DeepSeekClient
+from investor_agent.http import HttpError
+from investor_agent.radar import digest, market, pipeline as radar
+from investor_agent.scheduler import Scheduler
+from investor_agent.sources import SourceRegistry
+from investor_agent.timeutil import BEIJING
+from investor_agent.unicorn import factcheck, precheck, pipeline as unicorn
+
+
+# --- Yahoo ---------------------------------------------------------------------------------
+class YahooHttp:
+    def __init__(self, behaviour):
+        self.behaviour, self.calls = behaviour, []
+
+    def request(self, method, url, **kw):
+        self.calls.append(url)
+        out = self.behaviour(url)
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+
+def yahoo_json(price=100.0, prev=98.0, ts=1_800_000_000):
+    return {"chart": {"result": [{"meta": {"regularMarketPrice": price, "previousClose": prev, "regularMarketTime": ts}}]}}
+
+
+def test_yahoo_second_host_and_cache_on_429(make_app):
+    app = make_app()
+    now = datetime.fromtimestamp(1_800_000_100, tz=timezone.utc)
+    # query1 refuses, query2 answers
+    http = YahooHttp(lambda url: HttpError(429, "x") if "query1" in url else yahoo_json())
+    errors: list[str] = []
+    got = market.yahoo_quotes(http, errors, app.store, now)
+    assert set(got) == set(market.YAHOO) and not errors
+    # both refuse: the last good values (fresh enough) come from the cache, marked as such
+    http = YahooHttp(lambda url: HttpError(429, "x"))
+    errors = []
+    got = market.yahoo_quotes(http, errors, app.store, now + timedelta(hours=1))
+    assert set(got) == set(market.YAHOO) and "кэш" in got["SPX"].source and len(errors) == len(market.YAHOO)
+    assert len(http.calls) == 2  # after the first double refusal Yahoo is not hammered again
+    # too old for the cache -> a clear gap, no fake data
+    errors = []
+    assert market.yahoo_quotes(YahooHttp(lambda u: HttpError(429, "x")), errors, app.store, now + timedelta(hours=13)) == {}
+    assert errors and all("Yahoo недоступен" in e for e in errors)
+
+
+# --- DeepSeek cache and budget ---------------------------------------------------------------
+def test_search_cache_and_daily_budget(make_app):
+    app = make_app()
+    http = YahooHttp(lambda url: {"results": [{"url": "https://a.com", "title": "A"}]})
+    ds = DeepSeekClient(http, "k", store=app.store, daily_budget_usd=0.01, enforce_offpeak=False)
+    assert ds.search("q", 5, cache_ttl=24) and ds.search("q", 5, cache_ttl=24)
+    assert len(http.calls) == 1 and ds.usage.searches == 1  # the second one was free
+    ds.search("q", 5)  # no ttl -> a real call again (radar needs fresh news)
+    assert len(http.calls) == 2
+    ds.usage.searches = 100  # about $0.075 > 2 x $0.01
+    with pytest.raises(BudgetExceededError):
+        ds.search("other")
+
+
+def test_budget_alert_once_per_day(make_app):
+    app = make_app()
+    app.settings.daily_budget_usd = 1.0
+    app.store.usage_add("radar", 1.5, {})
+    app.deepseek.usage = type(app.deepseek.usage)()
+    app.record_usage("radar")
+    app.record_usage("radar")
+    assert len([m for m in app.telegram.sent if m["chat"] == "111" and "лимит" in m["html"]]) == 1
+
+
+# --- scheduler: retries every 3 hours ----------------------------------------------------------
+def test_failed_prepare_retries_every_3_hours_until_22(make_app):
+    app = make_app()
+    clock = [datetime(2026, 11, 8, 4, 40, tzinfo=BEIJING)]  # a Sunday: no peak windows
+    sch = Scheduler(app, clock=lambda: clock[0])
+    job = sch._job("unicorn_prepare")
+    sch._after(job, "failed")
+    assert job.next_run == datetime(2026, 11, 8, 7, 40, tzinfo=BEIJING)
+    clock[0] = datetime(2026, 11, 8, 19, 30, tzinfo=BEIJING)
+    sch._after(job, "failed")  # 22:30 would be too late: wait for tomorrow's 04:30
+    assert job.next_run == datetime(2026, 11, 9, 4, 30, tzinfo=BEIJING)
+    assert any("повторных попыток больше нет" in m["html"] for m in app.telegram.sent)
+    sch._after(job, "ready")
+    assert job.next_run == datetime(2026, 11, 9, 4, 30, tzinfo=BEIJING)
+
+
+def test_issue_ready_after_10_is_published_at_once(make_app):
+    app = make_app()
+    clock = datetime(2026, 11, 8, 13, 0, tzinfo=BEIJING)
+    sch = Scheduler(app, clock=lambda: clock)
+    sch._after(sch._job("unicorn_prepare"), "ready")
+    assert sch._job("unicorn_publish").next_run == clock
+    early = datetime(2026, 11, 8, 5, 0, tzinfo=BEIJING)
+    sch2 = Scheduler(app, clock=lambda: early)
+    sch2._after(sch2._job("unicorn_prepare"), "ready")
+    assert sch2._job("unicorn_publish").next_run == datetime(2026, 11, 8, 10, 0, tzinfo=BEIJING)
+
+
+def test_restart_redoes_failed_or_missing_preparation(make_app):
+    app = make_app()
+    clock = datetime(2026, 11, 8, 14, 0, tzinfo=BEIJING)
+    app.store.draft_save("2026-11-08", "failed", {}, error="x")
+    assert Scheduler(app, clock=lambda: clock)._job("unicorn_prepare").next_run == clock
+    app.store.draft_save("2026-11-08", "published", {})
+    assert Scheduler(app, clock=lambda: clock)._job("unicorn_prepare").next_run > clock
+
+
+# --- radar digest ----------------------------------------------------------------------------
+def _alert(app, n, sent_at):
+    aid = app.store.alert_create(f"k{n}", f"Заголовок {n}", {"plain_words": [f"Вывод номер {n}."]})
+    app.store.alert_mark(aid, "sent", [n])
+    with app.store._conn() as c:
+        c.execute("UPDATE radar_alerts SET sent_at=? WHERE id=?", (sent_at.isoformat(), aid))
+    return aid
+
+
+def test_digest_only_with_three_alerts_once(make_app):
+    app = make_app()
+    now = datetime(2026, 11, 8, 3, 0, tzinfo=BEIJING)  # 22:00 Moscow on 7 November
+    start, end = digest.day_window(now)
+    assert end == datetime(2026, 11, 7, 19, 0, tzinfo=timezone.utc) and start == end - timedelta(days=1)
+    _alert(app, 1, end - timedelta(hours=20))
+    _alert(app, 2, end - timedelta(hours=10))
+    assert digest.run(app, now) == "SKIPPED" and not app.telegram.sent
+    app.store.set("radar_digest:2026-11-07", "")  # allow a second try in the test
+    _alert(app, 3, end - timedelta(hours=1))
+    _alert(app, 4, end + timedelta(minutes=5))  # after the day's end: belongs to the next digest
+    assert digest.run(app, now) == "SENT"
+    html = app.telegram.sent[-1]["html"]
+    assert "ИТОГИ ДНЯ" in html and "алертов: 3" in html and "Заголовок 3" in html and "Заголовок 4" not in html
+    assert "Время чтения" in html and "Пекин" not in html
+    assert digest.run(app, now) == "EXISTS"
+
+
+# --- radar continuation ------------------------------------------------------------------------
+def test_continuation_replies_to_and_quotes_previous_alert(make_app):
+    app = make_app()
+    prev_id = _alert(app, 7, datetime.now(timezone.utc))
+    prev = radar._previous_alert(app, prev_id)
+    assert prev and prev["message_ids"] == [7]
+    assert radar._previous_alert(app, 999) is None and radar._previous_alert(app, None) is None
+    line = radar.continuation_line(prev)
+    assert "Продолжение" in line and "Заголовок 7" in line and "Вывод номер 7." in line
+    parts = app.telegram.send_series("@c", ["a", "b"], reply_to=7)
+    assert app.telegram.sent[0]["reply_to"] == 7 and app.telegram.sent[1]["reply_to"] is None and len(parts) == 2
+
+
+# --- glossary ----------------------------------------------------------------------------------
+def test_glossary_created_pinned_and_grown(make_app):
+    app = make_app()
+    assert glossary.sync(app) == "created"
+    post = app.telegram.sent[-1]
+    assert "ГЛОССАРИЙ" in post["html"] and "Время чтения" in post["html"] and post["button"][1].startswith("https://telegra.ph")
+    assert app.telegram.pinned == [len(app.telegram.sent)]
+    n = len(glossary.load(app))
+    new = glossary.add_terms(app, glossary.clean_terms([
+        {"term": "Acqui-hire", "definition": "Покупка компании ради её команды, а не продукта или клиентов."},
+        {"term": "ARR", "definition": "Дубликат существующего термина, его добавлять не нужно вовсе."},
+        {"term": "Bad", "definition": "english only definition that is rejected"}]))
+    assert new == ["Acqui-hire"] and len(glossary.load(app)) == n + 1
+    assert glossary.sync(app) == "updated"
+    assert app.telegram.edited[-1]["button"] and app.telegraph.edited and len(app.telegram.sent) == 1
+
+
+def test_publish_adds_issue_terms_to_page_and_glossary(make_app):
+    stage1 = lambda reg, p: {"candidates": [cand("Acme"), cand("Beta", industry="hr"), cand("Gamma", industry="edtech")]}
+
+    def report(reg, p):
+        r = good_report(reg)
+        r["glossary"] = [{"term": "Acqui-hire", "definition": "Покупка компании ради её команды, а не продукта."},
+                         {"term": "ARR", "definition": "Уже есть в глоссарии, поэтому не должен добавляться снова."}]
+        return r
+
+    app = make_app(deepseek=FakeDeepSeek([stage1, report]))
+    assert unicorn.prepare(app, "2026-11-09") == "ready"
+    assert [t["term"] for t in app.store.draft_get("2026-11-09")["payload"]["report"]["glossary"]] == ["Acqui-hire"]
+    assert unicorn.publish(app, "2026-11-09") == "published"
+    page = json.dumps(app.telegraph.pages[0][1], ensure_ascii=False)
+    assert "Термины выпуска" in page and "Acqui-hire" in page
+    assert "Acqui-hire" in glossary.load(app) and any("ГЛОССАРИЙ" in m.get("html", "") for m in app.telegram.sent)
+
+
+# --- fact check --------------------------------------------------------------------------------
+def test_factcheck_corrects_only_with_opened_source_and_flags_unverified():
+    reg = SourceRegistry()
+    opened = reg.add("https://reuters.com/a", "A", "Reuters")
+    reg.mark_fetched(opened.id, "A", "text")
+    closed = reg.add("https://x.com/b", "B", "X")
+    report = {"metrics": [{"label": "Оценка", "value": "$10 млрд", "note": "2026", "source": "S9"},
+                          {"label": "Клиенты", "value": "1000", "note": "2026"},
+                          {"label": "Выручка", "value": "$1 млрд", "note": "2026"}],
+              "rounds": [{"date": "2025-03", "stage": "B", "amount": "$60 млн"}]}
+    checks = [{"kind": "metric", "index": 0, "field": "value", "status": "corrected", "corrected": "$12 млрд", "source": opened.id},
+              {"kind": "metric", "index": 2, "field": "value", "status": "corrected", "corrected": "$2 млрд", "source": closed.id},
+              {"kind": "metric", "index": 1, "field": "value", "status": "unverifiable"},
+              {"kind": "round", "index": 0, "field": "amount", "status": "unverifiable"},
+              {"kind": "round", "index": 5, "field": "amount", "status": "corrected"},
+              {"kind": "metric", "index": 0, "field": "label", "status": "corrected", "corrected": "x", "source": opened.id}]
+    summary = factcheck.apply_checks(report, checks, reg)
+    assert report["metrics"][0]["value"] == "$12 млрд" and report["metrics"][0]["source"] == opened.id
+    assert report["metrics"][2]["value"] == "$1 млрд"  # the source was never opened: no correction
+    assert factcheck.UNCONFIRMED_NOTE in report["metrics"][1]["note"]
+    assert summary["corrected"] == 1 and len(summary["unverified"]) == 2
+    assert "Не удалось независимо подтвердить" in report["unknowns"][0]
+
+
+def test_factcheck_failure_does_not_stop_the_issue(make_app):
+    stage1 = lambda reg, p: {"candidates": [cand("Acme"), cand("Beta", industry="hr"), cand("Gamma", industry="edtech")]}
+
+    def boom(reg, p):
+        raise RuntimeError("deepseek down")
+
+    app = make_app(deepseek=FakeDeepSeek([stage1, lambda reg, p: good_report(reg), boom]))
+    assert unicorn.prepare(app, "2026-11-09") == "ready"
+
+
+# --- pre-publication check ------------------------------------------------------------------------
+def test_dead_media_is_dropped_before_publication():
+    http = FakeHttp()
+    http.dead = {"https://img/dead.jpg"}
+    report = {"media_resolved": [{"kind": "photo", "src": "https://img/ok.jpg"}, {"kind": "photo", "src": "https://img/dead.jpg"}],
+              "chart_images": ["https://img/dead.jpg", "https://img/ok.jpg"]}
+    removed = precheck.prune_dead_media(report, http)
+    assert [m["src"] for m in report["media_resolved"]] == ["https://img/ok.jpg"]
+    assert report["chart_images"] == [None, "https://img/ok.jpg"] and removed["photos"] == 1 and removed["charts"] == 1

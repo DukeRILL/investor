@@ -92,3 +92,5 @@ If an event qualifies:
 ```
 
 `updates_previous` — the `id` of the `history` item this alert materially updates, or `null`. For a pure price move with no other cause use category `price_move`. Text fields: plain text, `**bold**` allowed, bullets with `• `, no HTML. Total Russian text 250–600 words; up to 900 only for an exceptional event. `plain_words` — 3 to 5 short sentences, no jargon.
+
+**Continuing an earlier alert (owner's rule).** When the event develops an alert from `history`, set `updates_previous` to that item's `id`. The server then posts your text as a reply to the earlier alert and quotes its headline and first conclusion above your text, so the reader sees the thread. Write only the continuation, as if adding to what was already written: do not repeat facts from the earlier alert, start `fact` with what is new, say in `why_new` what changed against the earlier conclusion (confirmed, softened, reversed), and in `plain_words` state whether the earlier view stands. Keep the same 3–5 sentence rule. Use `updates_previous` only for a real development of that event, never to bring back an old story.

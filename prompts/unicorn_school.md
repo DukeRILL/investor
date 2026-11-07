@@ -76,10 +76,12 @@ Return only JSON:
   "media": [{"source": "S9", "kind": "photo|video|page", "section": "founders_story", "role": "hero|inline",
              "image_url": "optional, only if it appears in the retrieved page", "video_url": "optional",
              "caption": "Russian caption: who or what is shown, when, why it helps"}],
-  "unknowns": ["what remains publicly unknown, in Russian"]
+  "unknowns": ["what remains publicly unknown, in Russian"],
+  "glossary": [{"term": "Down round", "definition": "Russian definition in one or two plain sentences"}]
 }
 ```
 
+- `glossary`: 3–6 investment or startup terms that appear in this issue and that a beginner may not know (ARR, cap table, down round, tender offer…). `term` is the usual name (English abbreviation or phrase), `definition` is plain Russian, 1–2 sentences, 40–300 characters, no company-specific facts. Skip every term listed in `known_glossary_terms`: they are already in the channel's pinned glossary. Return `[]` if nothing new fits.
 - `metrics`: exactly 4, each with a source id. `verdict_scores`: exactly 4 with the labels above. `subtitle`, `facts_line`: always.
 - `sections` must contain all eleven ids in order. `body` is plain text with line breaks and blank lines between paragraphs; allowed: `**bold**`, bullet lines starting with `• `, numbered lines `1. `, subheadings on their own line starting with `### `, citations `[S1]`. No HTML, no tables, no `#` headings.
 - `media`: 6–10 items from retrieved pages (at least five are required); `section` is the id of the section where a photo belongs (videos are placed together in a block after the build section). `charts` is `[]` without reliable comparable data (each chart: at least 3 points, one unit, one source, dates as labels); the server draws them.

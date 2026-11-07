@@ -15,7 +15,9 @@ from ..storage import norm_name
 from ..telegram import TelegramError
 from ..textfmt import reading_line, table_nodes, text_to_nodes, to_tg_html, visible_len
 from ..timeutil import PeakHoursError, now_bj, ru_date
-from . import poll
+from .. import glossary
+from . import factcheck, poll
+from .precheck import prune_dead_media
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ AI_WINDOW = 10
 AI_MIN_BASE = 5  # denominator floor, so the first issues are not blocked by a tiny history
 AI_BONUS = 1.0
 AI_OVER_PENALTY = 5.0
+SEARCH_CACHE_HOURS = 24  # retries of a failed night preparation reuse searches and pages already paid for
 EXCLUDED_INDUSTRIES = ("oil", "gas", "mining", "defense", "defence", "нефт", "газ", "оборон")
 
 
@@ -199,7 +202,8 @@ def _prepare(app: App, today: str) -> str:
     ranked: list[dict] = []
     if topics:
         stage1 = ds.research(s.deepseek_model_fast, app.prompt("unicorn_candidates"),
-                             {**stage1_payload, "reader_topics": topics}, registry, max_tool_calls=30)
+                             {**stage1_payload, "reader_topics": topics}, registry, max_tool_calls=30,
+                             cache_ttl=SEARCH_CACHE_HOURS)
         ranked = rank_candidates(stage1.get("candidates") or [], app.store.archived_names(), recent,
                                  quota["ai_allowed"])
         if len(ranked) < 3:
@@ -207,7 +211,7 @@ def _prepare(app: App, today: str) -> str:
             topics = []
     if not topics:
         stage1 = ds.research(s.deepseek_model_fast, app.prompt("unicorn_candidates"), stage1_payload, registry,
-                             max_tool_calls=30)
+                             max_tool_calls=30, cache_ttl=SEARCH_CACHE_HOURS)
         ranked = rank_candidates(stage1.get("candidates") or [], app.store.archived_names(), recent,
                                  quota["ai_allowed"])
     if len(ranked) < 3:
@@ -218,9 +222,10 @@ def _prepare(app: App, today: str) -> str:
         "date": today, "company": chosen,
         "rejected": [{"name": r["name"], "final_score": r["final_score"], "industry": r.get("industry"),
                       "note": r.get("score_notes", "")} for r in rejected],
-        "known_sources": registry.brief(),
+        "known_sources": registry.brief(), "known_glossary_terms": glossary.known_terms(app),
     }
-    report = ds.research(s.deepseek_model_pro, app.prompt("unicorn_school"), payload, registry, max_tool_calls=45)
+    report = ds.research(s.deepseek_model_pro, app.prompt("unicorn_school"), payload, registry, max_tool_calls=45,
+                         cache_ttl=SEARCH_CACHE_HOURS)
     strip_unknown_citations(report, registry)
     errors = validate_report(report, registry)
     if errors:
@@ -231,18 +236,22 @@ def _prepare(app: App, today: str) -> str:
             "instruction": "Fix the problems. Open more pages with fetch_page if sources are missing. "
                            "Return the full corrected JSON.",
             "already_cited": cited,
-        }, registry, max_tool_calls=20)
+        }, registry, max_tool_calls=20, cache_ttl=SEARCH_CACHE_HOURS)
         strip_unknown_citations(report, registry)
         errors = validate_report(report, registry)
     if errors:
         raise UnicornError("разбор не прошёл проверку: " + "; ".join(errors))
 
     report["company_name"] = report.get("company_name") or chosen["name"]
+    factcheck.run(app, report, registry, chosen)  # second pass over the numbers; never blocks the issue
+    report["glossary"] = [{"term": k, "definition": v} for k, v in glossary.clean_terms(report.get("glossary")).items()
+                          if k.lower() not in {t.lower() for t in glossary.known_terms(app)}][:glossary.GLOSSARY_PER_ISSUE]
     _attach_media(app, report, registry)
     all_text = "\n".join(x.get("body", "") for x in report["sections"])
     used = set(registry.cited_ids(all_text, report.get("teaser", "")))
     used |= {m.get("source") for m in report.get("media") or [] if registry.get(str(m.get("source", "")))}
     used |= {r.get("source") for r in report.get("rounds") or [] if registry.get(str(r.get("source", "")))}
+    used |= {m.get("source") for m in report.get("metrics") or [] if registry.get(str(m.get("source", "")))}
     app.store.draft_save(today, "ready", {
         "report": report, "chosen": {k: chosen.get(k) for k in ("name", "industry", "country", "final_score",
                                                                  "weighted_score", "website", "ai_core")},
@@ -347,7 +356,7 @@ def hero_photo(report: dict) -> dict | None:
     return next((m for m in photos if m.get("role") == "hero"), photos[0] if photos else None)
 
 
-def build_page(report: dict, registry: SourceRegistry, date_str: str) -> tuple[str, list]:
+def build_page(report: dict, registry: SourceRegistry, date_str: str, glossary_url: str | None = None) -> tuple[str, list]:
     title = f"ШКОЛА ЕДИНОРОГОВ — {date_str}. КОМПАНИЯ ДНЯ: {report['company_name']}"
     media = report.get("media_resolved") or []
     hero = hero_photo(report)
@@ -409,6 +418,14 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str) -> tuple[s
     if report.get("unknowns"):
         nodes.append({"tag": "h3", "children": ["Что публично неизвестно"]})
         nodes.append({"tag": "ul", "children": [{"tag": "li", "children": [u]} for u in report["unknowns"]]})
+    terms = [t for t in report.get("glossary") or [] if isinstance(t, dict) and t.get("term")]
+    if terms or glossary_url:
+        nodes.append({"tag": "h3", "children": ["Термины выпуска"]})
+        for t in terms:
+            nodes.append({"tag": "p", "children": [{"tag": "b", "children": [t["term"]]}, f" — {t.get('definition', '')}"]})
+        if glossary_url:
+            nodes.append({"tag": "p", "children": [{"tag": "a", "attrs": {"href": glossary_url},
+                                                    "children": ["Все термины «Школы единорогов» →"]}]})
     nodes.append({"tag": "h3", "children": ["Источники"]})
     nodes.append({"tag": "ul", "children": [
         {"tag": "li", "children": [f"[{s.id[1:]}] ", {"tag": "a", "attrs": {"href": s.url}, "children": [s.title or s.url]},
@@ -505,6 +522,16 @@ def _send_post(app: App, report: dict, date_str: str, url: str) -> int:
     return app.telegram.send(app.target_chat(), html, button=button)
 
 
+def _grow_glossary(app: App, report: dict) -> None:
+    """New terms of the issue go into the pinned glossary. Never blocks the publication."""
+    try:
+        new = glossary.add_terms(app, glossary.clean_terms(report.get("glossary")))
+        if new or not glossary.page_url(app):
+            glossary.sync(app)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("glossary update failed: %s", exc)
+
+
 def publish(app: App, today: str | None = None) -> str:
     """10:00 job: Telegraph page + short post with a button. No DeepSeek calls here."""
     today = today or issue_date()
@@ -519,7 +546,10 @@ def publish(app: App, today: str | None = None) -> str:
     registry = _registry_from(payload["sources"])
     date_str = ru_date(datetime.fromisoformat(today))
     try:
-        url = draft.get("page_url") or create_pages(app.telegraph, *build_page(report, registry, date_str))
+        if not draft.get("page_url"):
+            prune_dead_media(report, app.http)  # dead pictures/videos are dropped just before the page is built
+        url = draft.get("page_url") or create_pages(app.telegraph, *build_page(report, registry, date_str,
+                                                                               glossary.page_url(app)))
         app.store.draft_mark(today, "ready", page_url=url)
         mid = _send_post(app, report, date_str, url)
     except Exception as exc:  # noqa: BLE001
@@ -533,4 +563,5 @@ def publish(app: App, today: str | None = None) -> str:
                           ai=bool(chosen.get("ai_core")))
     tomorrow = poll.next_issue(today)  # readers vote on the topic of the next issue right after this one
     poll.post(app, tomorrow, payload.get("poll_options") or poll.fallback_options(tomorrow))
+    _grow_glossary(app, report)  # after the poll: the issue post and the poll keep their places in the channel
     return "published"

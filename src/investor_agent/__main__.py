@@ -1,6 +1,8 @@
-"""Manual runs on the server:  python -m investor_agent prepare|publish|poll|poll-close|radar|status [--date YYYY-MM-DD]
+"""Manual runs on the server:  python -m investor_agent prepare|publish|poll|poll-close|radar|digest|glossary|status [--date YYYY-MM-DD]
 
-poll: post the readers' topic poll for the issue on --date (default: tomorrow) now; poll-close: tally it."""
+poll: post the readers' topic poll for the issue on --date (default: tomorrow) now; poll-close: tally it.
+digest: the Invest Radar day digest now (only when the last Moscow day had 3+ alerts);
+glossary: create or refresh the pinned glossary post and its Telegraph page."""
 
 import argparse
 import json
@@ -8,6 +10,8 @@ import logging
 
 from .app import build_app
 from .config import load_settings
+from . import glossary
+from .radar import digest as radar_digest
 from .radar import pipeline as radar
 from .unicorn import pipeline as unicorn
 from .unicorn import poll
@@ -17,7 +21,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # httpx INFO logs full URLs, incl. api_key=
     parser = argparse.ArgumentParser(prog="investor_agent")
-    parser.add_argument("command", choices=["prepare", "publish", "poll", "poll-close", "radar", "status"])
+    parser.add_argument("command", choices=["prepare", "publish", "poll", "poll-close", "radar", "digest", "glossary", "status"])
     parser.add_argument("--date", help="issue date YYYY-MM-DD (Beijing) for prepare/publish")
     args = parser.parse_args()
     app = build_app(load_settings())
@@ -34,6 +38,10 @@ def main() -> None:
         print(json.dumps(poll.close(app, args.date or unicorn.issue_date()), ensure_ascii=False))
     elif args.command == "radar":
         print(radar.run(app))
+    elif args.command == "digest":
+        print(radar_digest.run(app))
+    elif args.command == "glossary":
+        print(glossary.sync(app))
     else:
         draft = app.store.draft_get(args.date or unicorn.issue_date())
         print(json.dumps({"publish_mode": app.settings.publish_mode,

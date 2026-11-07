@@ -98,9 +98,21 @@ def snapshot_lines(snap: market.Snapshot, assets: list[str]) -> list[str]:
     return lines
 
 
-def format_alert(alert: dict, registry: SourceRegistry, snap: market.Snapshot, checked_at: datetime) -> list[str]:
+def continuation_line(previous: dict) -> str:
+    """Quote of the alert this one continues: its headline and its first conclusion."""
+    plain = previous["payload"].get("plain_words") or []
+    line = f"↩️ <b>Продолжение:</b> «{escape(scrub_text(previous['headline']))}»"
+    if plain:
+        line += f"\n<i>Тогда мы писали:</i> {escape(scrub_text(str(plain[0]).strip()))}"
+    return line
+
+
+def format_alert(alert: dict, registry: SourceRegistry, snap: market.Snapshot, checked_at: datetime,
+                 previous: dict | None = None) -> list[str]:
     head = [f"🚨 <b>{escape(scrub_text(alert['headline']))}</b>",
             f"🕒 Проверка: {fmt_bj(checked_at)}"]
+    if previous:
+        head.insert(1, continuation_line(previous))
     if alert.get("event_time_utc"):
         try:
             head.append(f"📍 Событие: {fmt_bj(datetime.fromisoformat(alert['event_time_utc'].replace('Z', '+00:00')))}")
@@ -127,6 +139,15 @@ def format_alert(alert: dict, registry: SourceRegistry, snap: market.Snapshot, c
     blocks.append(final)
     blocks[0] += "\n" + reading_line("\n".join(blocks))
     return split_html(blocks)
+
+
+def _previous_alert(app: App, ref) -> dict | None:
+    """The sent alert that the model says this one continues (history id), if it really went to the channel."""
+    try:
+        prev = app.store.alert_get(int(ref))
+    except (TypeError, ValueError):
+        return None
+    return prev if prev and prev["status"] == "sent" and prev["message_ids"] else None
 
 
 def _window(app: App, now: datetime, cfg: dict) -> tuple[datetime, datetime]:
@@ -167,7 +188,7 @@ def _run(app: App, now: datetime, start: datetime, end: datetime, cfg: dict) -> 
         app.notify_admin(f"Инвест радар: статус доставки алерта «{stuck['headline']}» неизвестен, повтор не отправлен.")
 
     s, ds = app.settings, app.deepseek
-    snap = market.collect(app.http, s.fred_api_key, fetch_page=ds.fetch, now=now)
+    snap = market.collect(app.http, s.fred_api_key, fetch_page=ds.fetch, now=now, store=app.store)
     for asset, data in snap.etf.items():
         for row in data.get("rows", []):
             app.store.etf_save(asset, row["session_date"], row["total_musd"], row["status"])
@@ -202,12 +223,14 @@ def _run(app: App, now: datetime, start: datetime, end: datetime, cfg: dict) -> 
         log.warning("radar alert blocked: %s", errors)
         return "BLOCKED", "; ".join(errors)
 
-    parts = format_alert(alert, registry, snap, now)
+    previous = _previous_alert(app, alert.get("updates_previous"))
+    parts = format_alert(alert, registry, snap, now, previous)
     key = event_key(alert["event_key"])
     alert["_snapshot_levels"] = {k: q.price for k, q in snap.quotes.items()}
     alert_id = app.store.alert_create(key, alert["headline"], alert)
     try:
-        mids = app.telegram.send_series(app.target_chat(), parts)
+        mids = app.telegram.send_series(app.target_chat(), parts,
+                                        reply_to=previous["message_ids"][0] if previous else None)
     except Exception as exc:  # noqa: BLE001
         app.store.alert_mark(alert_id, "failed")
         app.notify_admin(f"Инвест радар: алерт не доставлен: {exc}")

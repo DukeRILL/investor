@@ -13,6 +13,7 @@ class Settings(BaseModel):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model_fast: str = "deepseek-flash"
     deepseek_model_pro: str = "deepseek-v4-pro"
+    daily_budget_usd: float = 3.0  # soft alert at this spend per Beijing day, hard stop at twice this; 0 = off
 
     telegram_bot_token: str = ""
     telegram_chat_id: str = "@investor_duker"

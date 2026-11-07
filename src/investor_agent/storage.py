@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS usage (
     id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, job TEXT NOT NULL, cost_usd REAL NOT NULL,
     detail TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, until TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS tool_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL);
 """
 
 
@@ -89,6 +90,20 @@ class Store:
         with self._conn() as c:
             c.execute("INSERT INTO kv(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                       (key, value))
+
+    # DeepSeek search/fetch cache (docs/RULES.md section 6)
+    def cache_get(self, key: str, max_age_hours: float) -> str | None:
+        since = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat(timespec="seconds")
+        with self._conn() as c:
+            row = c.execute("SELECT value FROM tool_cache WHERE key=? AND at>=?", (key, since)).fetchone()
+        return row["value"] if row else None
+
+    def cache_put(self, key: str, value: str) -> None:
+        with self._conn() as c:
+            c.execute("INSERT INTO tool_cache(key, value, at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET "
+                      "value=excluded.value, at=excluded.at", (key, value, utcnow()))
+            old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat(timespec="seconds")
+            c.execute("DELETE FROM tool_cache WHERE at < ?", (old,))
 
     # locks (prevent overlapping runs, survive crashes via expiry)
     def acquire(self, name: str, minutes: int) -> bool:
@@ -170,6 +185,29 @@ class Store:
             p = json.loads(r["payload"])
             out.append({"id": r["id"], "event_key": r["event_key"], "headline": r["headline"], "sent_at": r["created_at"],
                         "conclusion": " ".join(p.get("plain_words", [])[:3]), "levels": p.get("_snapshot_levels", {})})
+        return out
+
+    def alert_get(self, alert_id: int) -> dict | None:
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM radar_alerts WHERE id=?", (alert_id,)).fetchone()
+        if not row:
+            return None
+        out = dict(row)
+        out["payload"] = json.loads(out["payload"])
+        out["message_ids"] = json.loads(out["message_ids"] or "[]")
+        return out
+
+    def alerts_between(self, start_iso: str, end_iso: str) -> list[dict]:
+        """Alerts delivered to the channel in [start, end), oldest first."""
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM radar_alerts WHERE status='sent' AND sent_at >= ? AND sent_at < ? "
+                             "ORDER BY id", (start_iso, end_iso)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["payload"] = json.loads(d["payload"])
+            d["message_ids"] = json.loads(d["message_ids"] or "[]")
+            out.append(d)
         return out
 
     def alert_exists(self, event_key: str) -> bool:

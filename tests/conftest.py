@@ -16,12 +16,19 @@ class FakeTelegram:
     def __init__(self, fail: bool = False):
         self.sent, self.deleted, self.fail = [], [], fail
 
-    def send(self, chat_id, html, button=None, disable_preview=True):
+    def send(self, chat_id, html, button=None, disable_preview=True, reply_to=None):
         from investor_agent.telegram import TelegramError
         if self.fail:
             raise TelegramError("sendMessage failed: test")
-        self.sent.append({"chat": chat_id, "html": html, "button": button})
+        self.sent.append({"chat": chat_id, "html": html, "button": button, "reply_to": reply_to})
         return len(self.sent)
+
+    def edit_text(self, chat_id, mid, html, button=None):
+        self.edited = getattr(self, "edited", []) + [{"mid": mid, "html": html, "button": button}]
+
+    def pin(self, chat_id, mid):
+        self.pinned = getattr(self, "pinned", []) + [mid]
+        return True
 
     def send_photo(self, chat_id, photo_url, html, button=None):
         from investor_agent.telegram import TelegramError
@@ -30,8 +37,8 @@ class FakeTelegram:
         self.sent.append({"chat": chat_id, "html": html, "button": button, "photo": photo_url})
         return len(self.sent)
 
-    def send_series(self, chat_id, parts, button=None):
-        return [self.send(chat_id, p) for p in parts]
+    def send_series(self, chat_id, parts, button=None, reply_to=None):
+        return [self.send(chat_id, p, reply_to=reply_to if i == 0 else None) for i, p in enumerate(parts)]
 
     def delete(self, chat_id, mid):
         self.deleted.append(mid)
@@ -54,6 +61,10 @@ class FakeTelegraph:
     def create_page(self, title, nodes):
         self.pages.append((title, nodes))
         return f"https://telegra.ph/test-page-{len(self.pages)}" if len(self.pages) > 1 else "https://telegra.ph/test-page"
+
+    def edit_page(self, url, title, nodes):
+        self.edited = getattr(self, "edited", []) + [(url, title, nodes)]
+        return url
 
     def upload_image(self, data, content_type):
         return "https://telegra.ph/file/test.jpg"
@@ -101,6 +112,9 @@ class FakeHttp:
     def post_file(self, url, filename, data, content_type, timeout=60, fields=None):
         self.posted = {"url": url, "filename": filename, "fields": fields}
         return {"secure_url": "https://res.cloudinary.com/demo/image/upload/unicorn/abc.jpg"}
+
+    def head(self, url, timeout=15):
+        return 200 if url not in getattr(self, "dead", set()) else 404
 
     def get_bytes(self, url, max_bytes=6_000_000, timeout=30):
         from investor_agent.http import HttpError
