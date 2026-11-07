@@ -1,0 +1,24 @@
+# Отдельный сервис монтажа. Подключается к сети n8n-video_internal, чтобы n8n видел его как http://video-ffmpeg:8020.
+# Запуск: sudo docker compose --env-file ../.env -f docker-compose.yml up -d
+# В контейнер попадают только DEEPSEEK_*, остальные секреты агента ему не нужны и не передаются.
+name: video-ffmpeg
+services:
+  video-ffmpeg:
+    build: {context: .., dockerfile: video/Dockerfile}
+    image: video-ffmpeg:local
+    container_name: video-ffmpeg
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /data
+      MODELS_DIR: /data/models
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      DEEPSEEK_MODEL_PRO: ${DEEPSEEK_MODEL_PRO:-}
+      DEEPSEEK_MODEL_FAST: ${DEEPSEEK_MODEL_FAST:-}
+    volumes: ["/opt/investor/data/video:/data"]
+    ports: ["127.0.0.1:8020:8020"]
+    networks: [n8n, default]
+    mem_limit: 2g
+    cpus: 2
+networks:
+  n8n: {name: n8n-video_internal, external: true}

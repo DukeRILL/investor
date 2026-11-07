@@ -1,0 +1,451 @@
+{
+ "name": "Школа единорогов: 4 ролика из статьи Telegraph (тест, без публикации)",
+ "nodes": [
+  {
+   "id": "v1",
+   "name": "Webhook",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    0,
+    0
+   ],
+   "parameters": {
+    "httpMethod": "POST",
+    "path": "unicorn-video",
+    "responseMode": "responseNode",
+    "options": {}
+   },
+   "webhookId": "unicorn-video-0001"
+  },
+  {
+   "id": "v2",
+   "name": "Сценарии и каталог фото",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    220,
+    0
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "http://video-ffmpeg:8020/scenarios",
+    "options": {
+     "timeout": 3600000
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({article_url: $json.body.article_url}) }}"
+   }
+  },
+  {
+   "id": "v3",
+   "name": "Реплики",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    440,
+    0
+   ],
+   "parameters": {
+    "jsCode": "const d = $input.first().json;\nconst out = [];\nd.scenarios.forEach((sc, s) => { if (!sc.problems.length) sc.scenes.forEach((x, n) => out.push({ json: { job: d.job, s, n, text: x.voice } })); });\nif (!out.length) throw new Error('Ни один сценарий не прошёл проверку: ' + JSON.stringify(d.scenarios.map(x => x.problems)));\nreturn out;"
+   }
+  },
+  {
+   "id": "v4",
+   "name": "Озвучка (Lev, curious)",
+   "type": "n8n-nodes-base.executeWorkflow",
+   "typeVersion": 1.2,
+   "position": [
+    660,
+    0
+   ],
+   "parameters": {
+    "workflowId": {
+     "__rl": true,
+     "value": "EGBCKy5XM0Be6HAr",
+     "mode": "id"
+    },
+    "options": {
+     "waitForSubWorkflow": true
+    },
+    "mode": "each"
+   }
+  },
+  {
+   "id": "v5",
+   "name": "Загрузить озвучку",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    880,
+    0
+   ],
+   "parameters": {
+    "method": "PUT",
+    "url": "={{ 'http://video-ffmpeg:8020/jobs/' + $('Реплики').item.json.job + '/' + $('Реплики').item.json.s + '/audio/' + $('Реплики').item.json.n }}",
+    "options": {
+     "timeout": 3600000,
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 0
+      }
+     }
+    },
+    "sendBody": true,
+    "contentType": "binaryData",
+    "inputDataFieldName": "data"
+   }
+  },
+  {
+   "id": "v6",
+   "name": "Нужен ли FLUX",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1100,
+    0
+   ],
+   "parameters": {
+    "jsCode": "const d = $('Сценарии и каталог фото').first().json;\nif (!d.generate.length) return [{ json: { skip: true } }];\nreturn d.generate.map(g => ({ json: { skip: false, job: d.job, ...g } }));"
+   },
+   "executeOnce": true
+  },
+  {
+   "id": "v7",
+   "name": "FLUX разрешён?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    1320,
+    0
+   ],
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "strict"
+     },
+     "conditions": [
+      {
+       "id": "c1",
+       "leftValue": "={{ $json.skip }}",
+       "rightValue": false,
+       "operator": {
+        "type": "boolean",
+        "operation": "false",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   }
+  },
+  {
+   "id": "v8",
+   "name": "CF FLUX",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1540,
+    160
+   ],
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "EWscFtI0E6mD0Ixt",
+     "name": "CF Workers AI"
+    }
+   },
+   "parameters": {
+    "method": "POST",
+    "url": "https://api.cloudflare.com/client/v4/accounts/__CF_ACCOUNT_ID__/ai/run/@cf/black-forest-labs/flux-1-schnell",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({prompt: $json.image_prompt, steps: 8}) }}",
+    "options": {
+     "timeout": 120000,
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 0
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "v9",
+   "name": "Base64 в файл",
+   "type": "n8n-nodes-base.convertToFile",
+   "typeVersion": 1.1,
+   "position": [
+    1760,
+    160
+   ],
+   "parameters": {
+    "operation": "toBinary",
+    "sourceProperty": "result.image",
+    "binaryPropertyName": "data",
+    "options": {
+     "fileName": "flux.jpg",
+     "mimeType": "image/jpeg"
+    }
+   }
+  },
+  {
+   "id": "v10",
+   "name": "Загрузить картинку",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1980,
+    160
+   ],
+   "parameters": {
+    "method": "PUT",
+    "url": "={{ 'http://video-ffmpeg:8020/jobs/' + $('Нужен ли FLUX').item.json.job + '/' + $('Нужен ли FLUX').item.json.s + '/image/' + $('Нужен ли FLUX').item.json.image_id }}",
+    "options": {
+     "timeout": 3600000,
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 0
+      }
+     }
+    },
+    "sendBody": true,
+    "contentType": "binaryData",
+    "inputDataFieldName": "data"
+   }
+  },
+  {
+   "id": "v11",
+   "name": "Ролики",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2200,
+    0
+   ],
+   "parameters": {
+    "jsCode": "const d = $('Сценарии и каталог фото').first().json;\nreturn d.scenarios.map((sc, s) => ({ job: d.job, s, ok: !sc.problems.length })).filter(x => x.ok).map(x => ({ json: x }));"
+   },
+   "executeOnce": true
+  },
+  {
+   "id": "v12",
+   "name": "Рендер (FFmpeg)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2420,
+    0
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "http://video-ffmpeg:8020/render",
+    "options": {
+     "timeout": 3600000,
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 0
+      }
+     }
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({job: $json.job, s: $json.s}) }}"
+   }
+  },
+  {
+   "id": "v13",
+   "name": "Итог",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2640,
+    0
+   ],
+   "parameters": {
+    "jsCode": "const d = $('Сценарии и каталог фото').first().json;\nreturn [{ json: { job: d.job, title: d.title, deepseek_calls: d.deepseek_calls, best: d.best, best_why: d.best_why, flux_calls: d.generate.length,\n  videos: $input.all().map(i => i.json), catalog: d.catalog.map(c => ({ id: c.id, kind: c.kind, priority: c.priority, available: c.available, source_url: c.source_url })) } }];"
+   }
+  },
+  {
+   "id": "v14",
+   "name": "Ответ",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    2860,
+    0
+   ],
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify($json) }}",
+    "options": {}
+   }
+  }
+ ],
+ "connections": {
+  "Webhook": {
+   "main": [
+    [
+     {
+      "node": "Сценарии и каталог фото",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Сценарии и каталог фото": {
+   "main": [
+    [
+     {
+      "node": "Реплики",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Реплики": {
+   "main": [
+    [
+     {
+      "node": "Озвучка (Lev, curious)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Озвучка (Lev, curious)": {
+   "main": [
+    [
+     {
+      "node": "Загрузить озвучку",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Загрузить озвучку": {
+   "main": [
+    [
+     {
+      "node": "Нужен ли FLUX",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Нужен ли FLUX": {
+   "main": [
+    [
+     {
+      "node": "FLUX разрешён?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "FLUX разрешён?": {
+   "main": [
+    [
+     {
+      "node": "CF FLUX",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Ролики",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "CF FLUX": {
+   "main": [
+    [
+     {
+      "node": "Base64 в файл",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Base64 в файл": {
+   "main": [
+    [
+     {
+      "node": "Загрузить картинку",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Загрузить картинку": {
+   "main": [
+    [
+     {
+      "node": "Ролики",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Ролики": {
+   "main": [
+    [
+     {
+      "node": "Рендер (FFmpeg)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Рендер (FFmpeg)": {
+   "main": [
+    [
+     {
+      "node": "Итог",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Итог": {
+   "main": [
+    [
+     {
+      "node": "Ответ",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1"
+ }
+}
