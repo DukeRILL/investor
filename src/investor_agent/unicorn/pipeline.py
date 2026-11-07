@@ -22,13 +22,10 @@ from .precheck import prune_dead_media
 log = logging.getLogger(__name__)
 
 WEIGHTS = {"demand": 0.30, "growth": 0.25, "investors": 0.20, "cis_fit": 0.15, "info": 0.10}
-SECTION_IDS = ["summary", "money_trend", "founders_story", "traction", "gtm_unit_economics", "capital_equity",
-               "why_won", "russia_cis", "build_yourself", "investor_verdict", "essence"]
+SECTION_IDS = ["summary", "idea", "start", "breakthrough", "money", "russia_cis", "lesson", "investor_verdict", "essence"]
 SECTION_TITLES = {
-    "summary": "Итог за 30 секунд", "money_trend": "Денежный тренд", "founders_story": "Основатели и путь от нуля",
-    "traction": "Трекшн и рост", "gtm_unit_economics": "Go to market и unit economics",
-    "capital_equity": "Капитал, доли и кэшаут", "why_won": "Почему они победили",
-    "russia_cis": "Аналоги в России и СНГ", "build_yourself": "Что можно создать самому",
+    "summary": "Итог за 30 секунд", "idea": "Идея и боль", "start": "Старт", "breakthrough": "Прорыв",
+    "money": "Деньги", "russia_cis": "Применимо ли в России", "lesson": "Урок",
     "investor_verdict": "Инвесторский вердикт", "essence": "Суть в пяти предложениях",
 }
 MIN_VERIFIED_SOURCES = 5
@@ -375,7 +372,7 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str) -> tuple[s
     photos: dict[str, list] = {}
     for m in media:
         if m["kind"] == "photo" and m is not hero:
-            sid = m.get("section") if m.get("section") in SECTION_IDS else "founders_story"
+            sid = m.get("section") if m.get("section") in SECTION_IDS else "start"
             photos.setdefault(sid, []).append(_figure(m))
     for section in report["sections"]:
         sid = section.get("id")
@@ -396,17 +393,17 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str) -> tuple[s
         body = text_to_nodes(section.get("body", ""), registry, cite="number")
         nodes.extend(_interleave(body, photos.get(sid, [])))
         for i, ch in enumerate(charts):
-            where = ch.get("section") if ch.get("section") in SECTION_IDS else "traction"
+            where = ch.get("section") if ch.get("section") in SECTION_IDS else "money"
             if where == sid:
                 images = report.get("chart_images") or ([report.get("chart_image")] if report.get("chart_image") else [])
                 nodes.extend(_chart_nodes(ch, images[i] if i < len(images) else None, registry))
-        if sid == "capital_equity" and report.get("rounds"):
+        if sid == "money" and report.get("rounds"):
             headers = ["Раунд", "Сумма", "Pre-money", "Post-money", "Лид", "Другие", "Тип"]
             rows = [[f"{r.get('date', '')} · {r.get('stage', '')}", r.get("amount"), r.get("pre_money"),
                      r.get("post_money"), r.get("lead"), r.get("others"), r.get("type")] for r in report["rounds"]]
             nodes.append({"tag": "p", "children": [{"tag": "b", "children": ["Раунды финансирования"]}]})
             nodes.extend(table_nodes(headers, rows))
-        if sid == "build_yourself":
+        if sid == "lesson":
             extras = [m for m in media if m["kind"] in ("video", "page")]
             if extras:
                 nodes.append({"tag": "h3", "children": ["Интервью, видео и материалы"]})

@@ -54,7 +54,7 @@ def good_report(registry):
             "subtitle": "Как Acme выросла до 100 млн долларов",
             "metrics": [{"label": f"Метрика {i}", "value": f"{i} млн", "note": "2026", "source": "S1"} for i in range(4)],
             "verdict_scores": [{"score": 9, "label": x} for x in ("Боль", "Рост", "Защита", "Воспроизводимость")],
-            "media": [{"source": f"S{i}", "kind": "photo", "section": "founders_story", "caption": f"Фото {i}"}
+            "media": [{"source": f"S{i}", "kind": "photo", "section": "start", "caption": f"Фото {i}"}
                       for i in range(1, 6)], "unknowns": ["Доли основателей"]}
 
 

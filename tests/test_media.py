@@ -54,7 +54,7 @@ def test_resolve_media_photo_video_and_rejects_fakes():
                      "https://news.com/og.jpg": (JPEG, "image/jpeg"),
                      "https://news.com/real.jpg": (JPEG, "image/jpeg"), **OEMBED_OK})
     uploads = []
-    items = [{"source": "S1", "kind": "photo", "caption": "Основатели", "role": "hero", "section": "founders_story"},
+    items = [{"source": "S1", "kind": "photo", "caption": "Основатели", "role": "hero", "section": "start"},
              {"source": "S2", "kind": "video", "caption": "Интервью"},
              {"source": "S1", "kind": "photo", "image_url": "https://invented.com/x.jpg", "caption": "Выдумка"},
              {"source": "S99", "kind": "photo", "caption": "Нет такого источника"}]
@@ -86,8 +86,8 @@ def _report_with_media(reg):
     report = good_report(reg)
     report["media_resolved"] = [
         {"kind": "photo", "src": "https://telegra.ph/file/hero.jpg", "caption": "Основатели", "role": "hero",
-         "section": "founders_story", "source_url": "https://s.com/a", "publisher": "Fortune", "source_id": "S1"},
-        {"kind": "photo", "src": "https://telegra.ph/file/p2.jpg", "caption": "Офис", "section": "founders_story",
+         "section": "start", "source_url": "https://s.com/a", "publisher": "Fortune", "source_id": "S1"},
+        {"kind": "photo", "src": "https://telegra.ph/file/p2.jpg", "caption": "Офис", "section": "start",
          "source_url": "https://s.com/b", "publisher": "TC", "source_id": "S2"},
         {"kind": "video", "embed": "/embed/youtube?url=x", "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
          "caption": "Интервью", "source_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "publisher": "YouTube",
@@ -293,7 +293,7 @@ def test_up_to_three_charts_are_placed_in_their_sections_and_old_chart_field_sti
     report = _report_with_media(reg)
     pts = [{"label": "2021", "value": 1}, {"label": "2022", "value": 2}, {"label": "2023", "value": 4}]
     report["charts"] = [{"title": "Оценка", "unit": "млрд $", "kind": "line", "points": pts, "source": "S1"},
-                        {"title": "Выручка", "unit": "млн $", "kind": "bar", "section": "capital_equity", "points": pts, "source": "S1"},
+                        {"title": "Выручка", "unit": "млн $", "kind": "bar", "section": "money", "points": pts, "source": "S1"},
                         {"title": "Раунды", "unit": "млн $", "kind": "bar", "section": "unknown-id", "points": pts}]
     report["chart_images"] = ["https://c/1.png", None, "https://c/3.png"]
     _, nodes = unicorn.build_page(report, reg, "9 ноября 2026")
