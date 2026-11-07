@@ -152,7 +152,7 @@ def test_format_alert_sections_and_disclaimer():
         assert heading in text
     assert radar.DISCLAIMER in text and "(Пекин)" not in text
     reg2 = SourceRegistry()
-    assert radar.DISCLAIMER not in "\n".join(radar.format_alert(alert_json(reg2, action="wait"), reg2, snap(), NOW))
+    assert radar.DISCLAIMER in "\n".join(radar.format_alert(alert_json(reg2, action="wait"), reg2, snap(), NOW))
 
 
 def test_radar_silent_when_nothing_found(make_app, monkeypatch):

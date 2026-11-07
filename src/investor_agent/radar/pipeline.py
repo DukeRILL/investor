@@ -20,7 +20,8 @@ CATEGORIES = {"oil_supply", "fed", "macro", "geopolitics", "crypto_market", "cry
 ACTIONS = {"buy": "покупка", "reduce_risk": "сократить риск", "take_partial_profit": "частично зафиксировать прибыль",
            "avoid_new_risk": "не наращивать риск", "wait": "ждать без сделок"}
 CONFIDENCE = {"low": "низкая", "medium": "средняя", "high": "высокая"}
-DISCLAIMER = "Не является индивидуальной инвестиционной рекомендацией."
+DISCLAIMER = ("Информационный материал, не является индивидуальной инвестиционной рекомендацией. "
+              "Решения вы принимаете самостоятельно и на свой риск.")
 SEEN_TRIGGERS_KEY = "radar_seen_triggers"
 ASSET_TO_QUOTE = {"SPX": ["SPX", "ES", "VIX"], "SP500": ["SPX", "ES", "VIX"], "S&P500": ["SPX", "ES", "VIX"],
                   "NDX": ["NDX"], "VIX": ["VIX"], "BRENT": ["BRENT"], "WTI": ["WTI"], "OIL": ["BRENT", "WTI"],
@@ -122,8 +123,7 @@ def format_alert(alert: dict, registry: SourceRegistry, snap: market.Snapshot, c
     final = ("<b>ПРОСТЫМИ СЛОВАМИ — ЧТО ЭТО ЗНАЧИТ И МОЙ ПРОГНОЗ</b>\n" + to_tg_html(plain, registry, radar_rules=True) +
              f"\n\nУверенность: <b>{CONFIDENCE.get(alert.get('confidence'), '—')}</b> · "
              f"Действие: <b>{ACTIONS[alert['action']]}</b>")
-    if alert.get("action") == "buy":
-        final += f"\n\n<i>{DISCLAIMER}</i>"
+    final += f"\n\n<i>{DISCLAIMER}</i>"  # always, whatever the action (standing agreement, RULES.md section 5)
     blocks.append(final)
     blocks[0] += "\n" + reading_line("\n".join(blocks))
     return split_html(blocks)
