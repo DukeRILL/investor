@@ -10,6 +10,9 @@ from investor_agent.unicorn import pipeline as unicorn
 from test_agents import cand, good_report
 
 JPEG = b"\xff\xd8\xff" + b"0" * 20_000
+OEMBED_URL = ("https://www.youtube.com/oembed?format=json&url="
+              "https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ")
+OEMBED_OK = {OEMBED_URL: (json.dumps({"title": "Founder interview", "author_name": "Sequoia Capital"}).encode(), "application/json")}
 
 
 def test_video_embed_accepts_youtube_and_vimeo_only():
@@ -49,7 +52,7 @@ def test_resolve_media_photo_video_and_rejects_fakes():
     reg = _registry()
     http = FakeHttp({"https://news.com/founders": (b'<meta property="og:image" content="https://news.com/og.jpg">', "text/html"),
                      "https://news.com/og.jpg": (JPEG, "image/jpeg"),
-                     "https://news.com/real.jpg": (JPEG, "image/jpeg")})
+                     "https://news.com/real.jpg": (JPEG, "image/jpeg"), **OEMBED_OK})
     uploads = []
     items = [{"source": "S1", "kind": "photo", "caption": "Основатели", "role": "hero", "section": "founders_story"},
              {"source": "S2", "kind": "video", "caption": "Интервью"},
@@ -273,3 +276,47 @@ def test_edit_caption_keeps_the_button():
     TelegramClient(http, "tok").edit_caption("@chan", 7, "<b>x</b>", button=("Читать", "https://t.example/a"))
     assert http.url.endswith("/editMessageCaption") and http.body["message_id"] == 7
     assert http.body["reply_markup"]["inline_keyboard"][0][0]["url"] == "https://t.example/a"
+
+
+def test_video_is_dropped_when_youtube_does_not_know_it_and_gets_channel_name_when_it_does():
+    reg = _registry()
+    items = [{"source": "S2", "kind": "video", "caption": ""}]
+    assert media.resolve_media(items, reg, FakeHttp(), lambda d, c: "u") == []  # oEmbed 404: private or deleted
+    out = media.resolve_media(items, reg, FakeHttp(OEMBED_OK), lambda d, c: "u")
+    assert out[0]["publisher"] == "Sequoia Capital" and out[0]["caption"] == "Founder interview"
+
+
+def test_up_to_three_charts_are_placed_in_their_sections_and_old_chart_field_still_works():
+    reg = SourceRegistry()
+    report = _report_with_media(reg)
+    pts = [{"label": "2021", "value": 1}, {"label": "2022", "value": 2}, {"label": "2023", "value": 4}]
+    report["charts"] = [{"title": "Оценка", "unit": "млрд $", "kind": "line", "points": pts, "source": "S1"},
+                        {"title": "Выручка", "unit": "млн $", "kind": "bar", "section": "capital_equity", "points": pts, "source": "S1"},
+                        {"title": "Раунды", "unit": "млн $", "kind": "bar", "section": "unknown-id", "points": pts}]
+    report["chart_images"] = ["https://c/1.png", None, "https://c/3.png"]
+    _, nodes = unicorn.build_page(report, reg, "9 ноября 2026")
+    flat = json.dumps(nodes, ensure_ascii=False)
+    assert flat.count("https://c/1.png") == 1 and flat.count("https://c/3.png") == 1  # unknown section -> traction
+    assert "Выручка" in flat and "2022" in flat  # no image: the data stays visible as a table
+    legacy = _report_with_media(SourceRegistry())  # single `chart` + `chart_image`, as stored for Serval
+    assert "chart.png" in json.dumps(unicorn.build_page(legacy, SourceRegistry(), "x")[1])
+
+
+def test_bar_chart_renders_png_when_font_is_available():
+    png = chart.render_chart([{"label": f"0{i}.26", "value": v} for i, v in enumerate([25, 30, 115, 300, 1850], 1)], "млн $", "bar")
+    if png is None:
+        import pytest
+        pytest.skip("DejaVu font is not installed here")
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_prompt_and_docs_keep_the_agreed_standards():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    prompt = (root / "prompts" / "unicorn_school.md").read_text(encoding="utf-8")
+    for must in ("role `hero`", "logo", "reviews", "`charts`", "verdict_scores", "metrics"):
+        assert must in prompt, must
+    rules = (root / "docs" / "RULES.md").read_text(encoding="utf-8")
+    for must in ("одно сообщение", "личк", "Cloudinary", "Время чтения", "docs/reference/ramp-2026-11-07.md"):
+        assert must in rules, must
+    assert (root / "docs" / "reference" / "ramp-2026-11-07.md").exists()

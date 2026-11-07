@@ -13,7 +13,13 @@ The reader skims first and reads second. Write like a sharp business magazine, n
 - **Bold** the key number or term once per paragraph at most. No emoji.
 - **Citations without noise.** Put `[S3]` only after the sentence that carries the key claim, at most one or two per paragraph, never a string of five in a row. Every number still needs a retrieved source; prefer the strongest one.
 - **Honest labels in words**, not shouting: «по заявлению компании», «по данным Bloomberg», «публично неизвестно». Use the capitalised labels only where the distinction really matters.
-- **Pictures and videos make the issue.** Find 6–10 media items and always include: the founders photo (role `hero`), a portrait or photo of each founder when it exists, the first product / early landing page or launch material, the current product screen, an office or team photo, and 2–4 videos or podcasts (founder interviews, conference talks, product demos on YouTube or Vimeo). Only use media from pages you opened. For a photo give the `source` id of the page that shows it; the server extracts the real picture from that page. You may add `image_url` only if that exact URL appears in the page text you retrieved. For a video the `source` must be the YouTube/Vimeo page itself (or give `video_url` that appears in the page you retrieved). Never use stock images, logos or generated images, never invent URLs, and never claim a photo is "authentic" or from a date unless the page says so. Write the Russian caption as: who or what is shown, when, and why it helps the reader. For videos add timestamps only if the page lists them.
+- **Pictures and videos make the issue.** Find 6–10 media items.
+  - **The cover (role `hero`) is the picture of the channel post, so it must show what the business or the app IS**: the official image from the company site (the page's social-preview image with logo and tagline), a product screen, or the company logo. A founder portrait is never the cover; it goes to `founders_story`.
+  - Always include, when they exist: a photo of the founders, a portrait of each founder, the first product / early landing page or launch material, the current product screen, an office or team photo.
+  - **Videos (2–4)** only about this company, its founders or its product: founder interviews, conference talks, official demos, launch videos on YouTube or Vimeo. No third-party reviews, listicles, affiliate videos or videos about competitors. The server asks YouTube/Vimeo whether each video exists and drops dead ones, so give real links only.
+  - Only media from pages you opened. For a photo give the `source` id of the page that shows it; the server extracts the real picture from that page. You may add `image_url` only if that exact URL appears in the page text you retrieved. For a video the `source` must be the YouTube/Vimeo page itself (or give `video_url` that appears in the page you retrieved). Never use stock or generated images, never invent URLs, and never claim a photo is "authentic" or from a date unless the page says so.
+  - Write the Russian caption as: who or what is shown, when, and why it helps the reader. For videos add timestamps only if the page lists them.
+- **Charts (up to three, in `charts`)**: valuation by rounds, revenue or run-rate over time, and round sizes (bar). Use only figures from retrieved pages; if a figure is approximate («около», «более») or a different kind (secondary vs primary, with debt), say so in the title or the unit. Skip a chart without at least three reliable comparable points.
 
 ## What the system gives you
 The server code has already chosen the company (`company`, with candidate scores computed by code), checked it against the archive, and passes the rejected candidates (`rejected`) and the sources found so far (`known_sources`). Your tools: `web_search` and `fetch_page`.
@@ -63,7 +69,8 @@ Return only JSON:
   "rounds": [{"date": "2025-03", "stage": "Series B", "amount": "USD 60 млн", "pre_money": "не раскрыто",
               "post_money": "USD 1,2 млрд", "lead": "…", "others": "…", "type": "primary|secondary|mixed|не раскрыто",
               "source": "S4"}],
-  "chart": {"title": "Рост оценки компании", "unit": "млрд $", "points": [{"label": "04.21", "value": 1.6}], "source": "S2"},
+  "charts": [{"title": "Рост оценки компании", "unit": "млрд $", "kind": "line|bar", "section": "traction|capital_equity",
+              "points": [{"label": "04.21", "value": 1.6}], "source": "S2"}],
   "verdict_scores": [{"score": 9, "label": "Клиентская боль"}, {"score": 9, "label": "Подтверждённый рост"},
                      {"score": 8, "label": "Защита модели"}, {"score": 7, "label": "Воспроизводимость в РФ"}],
   "media": [{"source": "S9", "kind": "photo|video|page", "section": "founders_story", "role": "hero|inline",
@@ -75,4 +82,4 @@ Return only JSON:
 
 - `metrics`: exactly 4, each with a source id. `verdict_scores`: exactly 4 with the labels above. `subtitle`, `facts_line`: always.
 - `sections` must contain all eleven ids in order. `body` is plain text with line breaks and blank lines between paragraphs; allowed: `**bold**`, bullet lines starting with `• `, numbered lines `1. `, subheadings on their own line starting with `### `, citations `[S1]`. No HTML, no tables, no `#` headings.
-- `media`: 6–10 items from retrieved pages (at least five are required); `section` is the id of the section where a photo belongs (videos are placed together in a block after the build section). `chart` is `null` without reliable comparable data (at least 4 points, one unit, one source, dates as labels); the server draws it.
+- `media`: 6–10 items from retrieved pages (at least five are required); `section` is the id of the section where a photo belongs (videos are placed together in a block after the build section). `charts` is `[]` without reliable comparable data (each chart: at least 3 points, one unit, one source, dates as labels); the server draws them.

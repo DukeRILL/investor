@@ -7,6 +7,7 @@ Nothing here calls DeepSeek.
 """
 
 import html as html_lib
+import json
 import logging
 import re
 from typing import Callable
@@ -48,6 +49,20 @@ def video_embed(url: str) -> tuple[str, str] | None:
         return None
     canonical = f"https://www.youtube.com/watch?v={vid}"
     return canonical, "/embed/youtube?url=" + quote(canonical, safe="")
+
+
+def oembed_info(http: Http, canonical: str) -> dict | None:
+    """Ask YouTube/Vimeo whether the video exists. Returns {'title', 'author'} or None (private, deleted, unknown)."""
+    base = ("https://vimeo.com/api/oembed.json?url=" if "vimeo.com" in canonical
+            else "https://www.youtube.com/oembed?format=json&url=")
+    try:
+        data, _ = http.get_bytes(base + quote(canonical, safe=""), max_bytes=100_000, timeout=20)
+        info = json.loads(data.decode("utf-8", "ignore"))
+    except (HttpError, OSError, ValueError):
+        return None
+    if not isinstance(info, dict) or not info.get("title"):
+        return None
+    return {"title": str(info["title"]), "author": str(info.get("author_name") or "")}
 
 
 def find_page_image(page_html: str, base_url: str) -> str | None:
@@ -120,9 +135,12 @@ def resolve_media(items: list[dict], registry: SourceRegistry, http: Http,
             if video:
                 break
         if video and kind in ("video", "page", ""):
-            if video[0] not in seen:
+            info = oembed_info(http, video[0]) if video[0] not in seen else None
+            if info:  # the video really exists; a private or deleted one is dropped
                 seen.add(video[0])
-                out.append({**base, "kind": "video", "video_url": video[0], "embed": video[1]})
+                out.append({**base, "kind": "video", "video_url": video[0], "embed": video[1],
+                            "caption": str(item.get("caption") or "").strip() or info["title"], "video_title": info["title"],
+                            "publisher": info["author"] or base["publisher"]})
             continue
         if kind == "photo":
             try:

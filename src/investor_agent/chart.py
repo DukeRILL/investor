@@ -22,7 +22,7 @@ def _fmt(value: float) -> str:
     return f"{value:g}".replace(".", ",")
 
 
-def render_chart(points: list[dict], unit: str = "") -> bytes | None:
+def render_chart(points: list[dict], unit: str = "", kind: str = "line") -> bytes | None:
     pts = [(str(p.get("label", "")), _number(p.get("value"))) for p in points or []]
     pts = [(label, v) for label, v in pts if v is not None]
     if len(pts) < 3:
@@ -50,20 +50,30 @@ def render_chart(points: list[dict], unit: str = "") -> bytes | None:
     ymax = step * 4
     plot_w, plot_h = w - left - right, h - top - bottom
 
+    bars = kind == "bar"
+
     def xy(i, v):
-        return left + plot_w * (i / (len(pts) - 1)), top + plot_h * (1 - v / ymax)
+        x = left + plot_w * ((i + 0.5) / len(pts) if bars else i / (len(pts) - 1))
+        return x, top + plot_h * (1 - v / ymax)
     if unit:
         d.text((left, 28), unit, font=mid, fill=INK2)
     for k in range(5):
         y = top + plot_h * (1 - k / 4)
         d.line([(left, y), (w - right, y)], fill=GRID, width=2)
         d.text((left - 18, y), _fmt(step * k), font=small, fill=INK2, anchor="rm")
-    line = [xy(i, v) for i, (_, v) in enumerate(pts)]
-    d.line(line, fill=BLUE, width=5, joint="curve")
-    for i, ((label, v), (x, y)) in enumerate(zip(pts, line)):
-        d.ellipse([x - 11, y - 11, x + 11, y + 11], fill=BLUE, outline=SURFACE, width=4)
-        d.text((x, h - bottom + 30), label[:10], font=small, fill=INK2, anchor="mm")
-        if i in (0, len(pts) - 1) or v in (max(p[1] for p in pts), min(p[1] for p in pts)):
+    coords = [xy(i, v) for i, (_, v) in enumerate(pts)]
+    if bars:
+        half = plot_w / len(pts) * 0.3
+        for (x, y) in coords:
+            d.rectangle([x - half, y, x + half, top + plot_h], fill=BLUE)
+    else:
+        d.line(coords, fill=BLUE, width=5, joint="curve")
+    lo, hi = min(p[1] for p in pts), max(p[1] for p in pts)
+    for i, ((label, v), (x, y)) in enumerate(zip(pts, coords)):
+        if not bars:
+            d.ellipse([x - 11, y - 11, x + 11, y + 11], fill=BLUE, outline=SURFACE, width=4)
+        d.text((x, h - bottom + 30), label[: 7 if bars else 10], font=small, fill=INK2, anchor="mm")
+        if i in (0, len(pts) - 1) or v in (hi, lo):
             d.text((x, y - 24), _fmt(v), font=bold, fill=INK, anchor="mb" if i < len(pts) - 1 else "rb")
     buf = io.BytesIO()
     img.save(buf, "PNG", optimize=True)

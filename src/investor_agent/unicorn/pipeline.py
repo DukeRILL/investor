@@ -209,6 +209,30 @@ def _prepare(app: App, today: str) -> str:
     return "ready"
 
 
+def report_charts(report: dict) -> list[dict]:
+    """Up to three charts; the old single `chart` field still works."""
+    charts = [c for c in report.get("charts") or [] if isinstance(c, dict) and c.get("points")]
+    if not charts and isinstance(report.get("chart"), dict) and report["chart"].get("points"):
+        charts = [report["chart"]]
+    return charts[:3]
+
+
+def _chart_nodes(ch: dict, image: str | None, registry: SourceRegistry) -> list:
+    src = registry.get(str(ch.get("source", "")).split(",")[0].strip())
+    if image:
+        caption: list = [ch.get("title", "Динамика"), f" ({ch['unit']})" if ch.get("unit") else ""]
+        if src:
+            caption += [". Источник: ", {"tag": "a", "attrs": {"href": src.url}, "children": [src.publisher]}]
+        return [{"tag": "figure", "children": [{"tag": "img", "attrs": {"src": image}},
+                                               {"tag": "figcaption", "children": caption}]}]
+    rows = [[p.get("label"), f"{p.get('value')} {ch.get('unit', '')}".strip()] for p in ch["points"]]
+    out = [{"tag": "p", "children": [{"tag": "b", "children": [ch.get("title", "Динамика")]}]}]
+    out.extend(table_nodes(["Период", "Значение"], rows))
+    if src:
+        out.append({"tag": "p", "children": ["Источник: ", {"tag": "a", "attrs": {"href": src.url}, "children": [src.publisher]}]})
+    return out
+
+
 def _uploader(app: App):
     return (app.images or app.telegraph).upload_image
 
@@ -220,16 +244,17 @@ def _attach_media(app: App, report: dict, registry: SourceRegistry) -> None:
     except Exception as exc:  # noqa: BLE001
         log.warning("media resolution failed: %s", type(exc).__name__)
         report["media_resolved"] = []
-    chart = report.get("chart") or {}
-    try:
-        png = render_chart(chart.get("points") or [], chart.get("unit", "")) if chart else None
-        report["chart_image"] = _uploader(app)(png, "image/png") if png else None
-    except Exception as exc:  # noqa: BLE001
-        log.warning("chart image failed: %s", type(exc).__name__)
-        report["chart_image"] = None
+    report["chart_images"] = []
+    for chart in report_charts(report):
+        try:
+            png = render_chart(chart.get("points") or [], chart.get("unit", ""), chart.get("kind", "line"))
+            report["chart_images"].append(_uploader(app)(png, "image/png") if png else None)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("chart image failed: %s", type(exc).__name__)
+            report["chart_images"].append(None)
     kinds = [m["kind"] for m in report["media_resolved"]]
-    log.info("media: %d photos, %d videos, %d pages; chart image: %s", kinds.count("photo"), kinds.count("video"),
-             kinds.count("page"), bool(report["chart_image"]))
+    log.info("media: %d photos, %d videos, %d pages; chart images: %d of %d", kinds.count("photo"), kinds.count("video"),
+             kinds.count("page"), sum(bool(x) for x in report["chart_images"]), len(report["chart_images"]))
 
 
 def _registry_from(sources: list[dict]) -> SourceRegistry:
@@ -283,6 +308,7 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str) -> tuple[s
     title = f"ШКОЛА ЕДИНОРОГОВ — {date_str}. КОМПАНИЯ ДНЯ: {report['company_name']}"
     media = report.get("media_resolved") or []
     hero = hero_photo(report)
+    charts = report_charts(report)
     nodes: list = []
     if report.get("subtitle"):
         nodes.append({"tag": "p", "children": [{"tag": "b", "children": [report["subtitle"]]}]})
@@ -316,22 +342,11 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str) -> tuple[s
                 for x in report["verdict_scores"]]})
         body = text_to_nodes(section.get("body", ""), registry, cite="number")
         nodes.extend(_interleave(body, photos.get(sid, [])))
-        if sid == "traction" and report.get("chart") and report["chart"].get("points"):
-            ch = report["chart"]
-            src = registry.get(str(ch.get("source", "")))
-            if report.get("chart_image"):
-                caption: list = [ch.get("title", "Динамика"), f" ({ch['unit']})" if ch.get("unit") else ""]
-                if src:
-                    caption += [". Источник: ", {"tag": "a", "attrs": {"href": src.url}, "children": [src.publisher]}]
-                nodes.append({"tag": "figure", "children": [{"tag": "img", "attrs": {"src": report["chart_image"]}},
-                                                            {"tag": "figcaption", "children": caption}]})
-            else:
-                rows = [[p.get("label"), f"{p.get('value')} {ch.get('unit', '')}".strip()] for p in ch["points"]]
-                nodes.append({"tag": "p", "children": [{"tag": "b", "children": [ch.get("title", "Динамика")]}]})
-                nodes.extend(table_nodes(["Период", "Значение"], rows))
-                if src:
-                    nodes.append({"tag": "p", "children": ["Источник: ", {"tag": "a", "attrs": {"href": src.url},
-                                                                           "children": [src.publisher]}]})
+        for i, ch in enumerate(charts):
+            where = ch.get("section") if ch.get("section") in SECTION_IDS else "traction"
+            if where == sid:
+                images = report.get("chart_images") or ([report.get("chart_image")] if report.get("chart_image") else [])
+                nodes.extend(_chart_nodes(ch, images[i] if i < len(images) else None, registry))
         if sid == "capital_equity" and report.get("rounds"):
             headers = ["Раунд", "Сумма", "Pre-money", "Post-money", "Лид", "Другие", "Тип"]
             rows = [[f"{r.get('date', '')} · {r.get('stage', '')}", r.get("amount"), r.get("pre_money"),
