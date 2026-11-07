@@ -1,38 +1,52 @@
+"""Web app (health check on 127.0.0.1) + background scheduler."""
+
+import logging
+import threading
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
-from .clients import DeepSeekClient, TelegramClient
-from .config import Settings
-from .models import ResearchInput
-from .service import ResearchService
-from .storage import PublicationStore
+from .app import build_app
+from .config import load_settings
+from .scheduler import Scheduler
+from .timeutil import now_bj
+from .unicorn.pipeline import issue_date
 
-settings = Settings()
-service = ResearchService(settings, DeepSeekClient(settings), TelegramClient(settings), PublicationStore(settings.database_path))
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("investor_agent")
 
-
-async def require_api_token(authorization: str | None = Header(default=None)) -> None:
-    if settings.agent_api_token and authorization != f"Bearer {settings.agent_api_token}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+settings = load_settings()
+state: dict = {}
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(_app):
+    app = build_app(settings)
+    state["app"] = app
+    if settings.scheduler_enabled:
+        scheduler = Scheduler(app)
+        state["scheduler"] = scheduler
+        threading.Thread(target=scheduler.run_forever, name="scheduler", daemon=True).start()
     yield
-    await service.deepseek.close()
-    await service.telegram.close()
+    if "scheduler" in state:
+        state["scheduler"].stop()
 
 
-app = FastAPI(title="Investor agent", lifespan=lifespan)
+async def health(_request):
+    app = state.get("app")
+    draft = app.store.draft_get(issue_date()) if app else None
+    return JSONResponse({
+        "status": "ok",
+        "publish_mode": settings.publish_mode,
+        "deepseek_configured": bool(settings.deepseek_api_key),
+        "telegram_configured": bool(settings.telegram_bot_token),
+        "now_beijing": now_bj().isoformat(timespec="minutes"),
+        "unicorn_today": draft["status"] if draft else None,
+        "last_radar_window_end": app.store.last_ok_window_end() if app else None,
+        "jobs": state["scheduler"].status() if "scheduler" in state else None,
+    })
 
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "publish_mode": settings.telegram_publish_mode}
-
-
-@app.post("/runs", dependencies=[Depends(require_api_token)])
-async def create_run(research_input: ResearchInput) -> dict:
-    result, published, decision = await service.run(research_input)
-    return {"result": result.model_dump(mode="json"), "published": published, "decision": decision}
+app = Starlette(routes=[Route("/health", health)], lifespan=lifespan)

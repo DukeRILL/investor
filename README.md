@@ -1,38 +1,40 @@
-# Investor agent
+# Investor agents — @investor_duker
 
-Сервис принимает структурированные данные исследования, передаёт их DeepSeek и
-публикует только результаты со статусом `PUBLISH`, подтверждёнными источниками
-и уникальным `event_id`. В режиме `draft` публикация выключена.
+Два автономных агента на DeepSeek, которые сами наполняют канал @investor_duker. Работают в отдельном Docker-контейнере на сервере в Сингапуре.
 
-Инструкции для модели находятся в `prompts/master_system_prompt.md`; их можно
-редактировать без изменения кода.
+| Агент | Когда | Что публикует |
+|---|---|---|
+| 🦄 **Школа единорогов** | подготовка ночью в 03:00 (повторы 05:00, 07:00), публикация в **10:00 по Пекину** | статья в Telegraph + короткий пост с кнопкой «Читать разбор» |
+| 🚨 **Инвест радар** | каждые 3 часа по Пекину (в будни запуски 09:00 и 15:00 переносятся на 12:15 и 18:15) | алерт только при важном новом событии, иначе тишина |
 
-## Подготовка
+Правила проекта — в [docs/RULES.md](docs/RULES.md), устройство — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Запуск
 
 ```bash
-python -m venv .venv
-. .venv/bin/activate
+cp .env.example .env        # заполнить ключи
+docker build -t investor-agent:$(git rev-parse --short HEAD) .
+docker run -d --name investor-agent --restart unless-stopped \
+  --env-file .env -v "$PWD/data:/app/data" \
+  -p 127.0.0.1:8010:8010 --memory 1g --cpus 1 \
+  investor-agent:$(git rev-parse --short HEAD)
+curl http://127.0.0.1:8010/health
+```
+
+Ручной запуск внутри контейнера (только в дешёвые часы DeepSeek):
+
+```bash
+docker exec investor-agent python -m investor_agent status
+docker exec investor-agent python -m investor_agent prepare     # подготовить разбор на сегодня
+docker exec investor-agent python -m investor_agent publish     # опубликовать готовый разбор
+docker exec investor-agent python -m investor_agent radar       # один проход радара
+```
+
+## Тесты
+
+```bash
 pip install -r requirements.txt
-cp .env.example .env
+python -m pytest -q
 ```
 
-Заполните `TELEGRAM_BOT_TOKEN` и `DEEPSEEK_API_KEY`. `.env` не следует
-коммитить. Запуск:
-
-```bash
-PYTHONPATH=src uvicorn investor_agent.main:app --host 127.0.0.1 --port 8000
-```
-
-Проверка работоспособности:
-
-```bash
-curl http://127.0.0.1:8000/health
-PYTHONPATH=src pytest -q
-```
-
-Для обработки материала отправьте `POST /runs` с JSON, соответствующим
-`ResearchInput`. Вход обязан содержать результаты поиска или первичные документы.
-Без них prompt предписывает вернуть `BLOCKED` и публикации не будет.
-
-Чтобы разрешить публикацию после проверки, измените
-`TELEGRAM_PUBLISH_MODE=auto`. Сначала используйте `draft` и проверьте ответы.
+Промты для DeepSeek — в `prompts/` (на английском, ответы всегда на русском). Пороги радара — в `config/radar.yaml`. Всё это можно править без изменения кода.

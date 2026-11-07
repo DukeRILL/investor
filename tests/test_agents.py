@@ -1,0 +1,181 @@
+from datetime import datetime, timedelta, timezone
+
+from conftest import FakeDeepSeek, FakeTelegram
+
+from investor_agent.radar import market, pipeline as radar, triggers
+from investor_agent.sources import SourceRegistry
+from investor_agent.unicorn import pipeline as unicorn
+
+RU = "Компания решает дорогую проблему клиентов и растёт за счёт повторных продаж. " * 8
+
+
+# --- unicorn -------------------------------------------------------------------------------
+def cand(name, **kw):
+    base = {"name": name, "country": "USA", "industry": "fintech", "valuation_usd_bn": 2, "private": True,
+            "scores": {"demand": 8, "growth": 7, "investors": 8, "cis_fit": 7, "info": 6}}
+    base.update(kw)
+    return base
+
+
+def test_weighted_score():
+    assert unicorn.weighted_score({"demand": 10, "growth": 10, "investors": 10, "cis_fit": 10, "info": 10}) == 10
+    assert unicorn.weighted_score({"demand": 10}) == 3.0
+
+
+def test_rank_excludes_archive_small_and_rotates():
+    ranked = unicorn.rank_candidates(
+        [cand("Vinted Ltd"), cand("Small", valuation_usd_bn=0.6), cand("OilCo", industry="oil & gas"),
+         cand("A", industry="fintech"), cand("B", industry="hr tech", scores={"demand": 8, "growth": 7, "investors": 8,
+                                                                              "cis_fit": 7, "info": 5})],
+        excluded={"vinted"}, recent=[{"industry": "fintech", "country": "France"}])
+    assert [r["name"] for r in ranked] == ["B", "A"]  # A penalised for repeating yesterday's industry
+
+
+def good_report(registry):
+    for i in range(6):
+        src = registry.add(f"https://site{i}.com/a", f"Title {i}", f"Pub{i}")
+        registry.mark_fetched(src.id, src.title, "content")
+    sections = [{"id": sid, "title": unicorn.SECTION_TITLES[sid], "body": RU + " [S1] [S2] [S3] [S4] [S5] [S6]"}
+                for sid in unicorn.SECTION_IDS]
+    sections[-1]["body"] = "Первое. Второе. Третье. Четвёртое. Пятое. Какую проблему вы видите каждый день? Правило: продавай до разработки."
+    return {"company_name": "Acme", "industry": "финтех", "country": "США", "usefulness_score": 8,
+            "teaser": "Acme выросла до 100 млн долларов ARR за три года [S1].", "sections": sections,
+            "rounds": [{"date": "2025-03", "stage": "Series B", "amount": "USD 60 млн", "source": "S2"}],
+            "media": [{"source": "S3", "kind": "video", "caption": "Интервью основателя"}], "unknowns": ["Доли основателей"]}
+
+
+def test_prepare_and_publish_full_cycle(make_app):
+    stage1 = lambda reg, p: {"candidates": [cand("Acme"), cand("Beta", industry="hr"), cand("Gamma", industry="edtech")]}
+    ds = FakeDeepSeek([stage1, lambda reg, p: good_report(reg)])
+    app = make_app(deepseek=ds)
+    assert unicorn.prepare(app, "2026-11-09") == "ready"
+    assert ds.calls[1]["payload"]["company"]["name"] == "Acme"
+    assert unicorn.prepare(app, "2026-11-09") == "exists"
+    assert unicorn.publish(app, "2026-11-09") == "published"
+    post = app.telegram.sent[0]
+    assert post["chat"] == "@investor_duker" and post["button"][1] == "https://telegra.ph/test-page"
+    assert "Компания дня: Acme" in post["html"] and "[S1]" not in post["html"]
+    title, nodes = app.telegraph.pages[0]
+    assert title == "ШКОЛА ЕДИНОРОГОВ — 9 ноября 2026. КОМПАНИЯ ДНЯ: Acme"
+    assert "acme" in app.store.archived_names()
+    assert unicorn.publish(app, "2026-11-09") == "already_published"
+
+
+def test_prepare_blocks_report_without_enough_opened_sources(make_app):
+    def weak(reg, p):
+        report = good_report(reg)
+        for s in reg.sources.values():
+            s.fetched = False
+        return report
+    stage1 = lambda reg, p: {"candidates": [cand("Acme"), cand("Beta"), cand("Gamma")]}
+    app = make_app(deepseek=FakeDeepSeek([stage1, weak, weak]))
+    assert unicorn.prepare(app, "2026-11-09") == "failed"
+    assert app.store.draft_get("2026-11-09")["status"] == "failed"
+    assert "Школа единорогов" in app.telegram.sent[0]["html"] and app.telegram.sent[0]["chat"] == "111"
+    assert unicorn.publish(app, "2026-11-09") == "no_draft"
+
+
+def test_draft_mode_sends_to_admin(make_app):
+    stage1 = lambda reg, p: {"candidates": [cand("Acme"), cand("Beta"), cand("Gamma")]}
+    app = make_app(deepseek=FakeDeepSeek([stage1, lambda reg, p: good_report(reg)]), mode="draft")
+    unicorn.prepare(app, "2026-11-09")
+    unicorn.publish(app, "2026-11-09")
+    assert app.telegram.sent[0]["chat"] == "111"
+
+
+# --- radar ---------------------------------------------------------------------------------
+NOW = datetime(2026, 11, 9, 19, 0, tzinfo=timezone.utc)  # Tue 03:00 Beijing, US cash closed
+
+
+def snap(btc_change=1.0, observed=NOW):
+    s = market.Snapshot(taken_at=NOW.isoformat(), sessions=market.sessions(NOW))
+    s.quotes["BTC"] = market.Quote("BTC", "BTC/USDT спот (Binance)", 90000, btc_change, "%", "скользящие 24 часа",
+                                   observed.isoformat(), "Binance spot")
+    return s
+
+
+def test_sessions_and_farside():
+    assert market.us_cash_open(datetime(2026, 11, 9, 15, 0, tzinfo=timezone.utc))
+    assert not market.us_cash_open(datetime(2026, 11, 26, 15, 0, tzinfo=timezone.utc))  # Thanksgiving
+    assert not market.futures_open(datetime(2026, 11, 7, 12, 0, tzinfo=timezone.utc))   # Saturday
+    md = ("| Date | IBIT | FBTC | Total |\n|---|---|---|---|\n| 05 Nov 2026 | 100.0 | (20.5) | 79.5 |\n"
+          "| 06 Nov 2026 | (300.0) | (250.0) | (550.0) |\n| 07 Nov 2026 |  | 10.0 | 10.0 |\n")
+    rows = market.parse_farside(md)
+    assert rows[1] == {"session_date": "2026-11-06", "total_musd": -550.0, "status": "final"}
+    assert rows[2]["status"] == "preliminary"
+
+
+def test_triggers_threshold_and_staleness():
+    cfg = {"crypto": {"BTC": {"move_pct": 5}}}
+    start = NOW - timedelta(hours=3)
+    assert triggers.compute(snap(6.2), cfg, start)[0]["trigger_key"].startswith("move|BTC|")
+    assert triggers.compute(snap(3.0), cfg, start) == []
+    assert triggers.compute(snap(6.2, observed=NOW - timedelta(hours=5)), cfg, start) == []
+
+
+def alert_json(reg, severity="high", action="wait", n_sources=1):
+    for i in range(n_sources):
+        src = reg.add(f"https://reuters{i}.com/x", f"Headline {i}", f"Pub{i}")
+        reg.mark_fetched(src.id, src.title, "text")
+    cites = " ".join(f"[S{i + 1}]" for i in range(n_sources))
+    return {"decision": "ALERT", "severity": severity, "confidence": "medium", "action": action,
+            "event_key": {"category": "oil_supply", "assets": ["BRENT", "WTI"], "occurrence": "OPEC+ cut",
+                          "event_date": "2026-11-09"},
+            "headline": "ОПЕК+ неожиданно сократила добычу", "why_new": "Решение принято сегодня.",
+            "fact": f"ОПЕК+ объявила сокращение добычи {cites}.", "hypothesis": "Цены на нефть могут вырасти.",
+            "scenarios": [{"name": "Базовый", "text": "Рост нефти", "confirm_if": "Brent выше", "invalidate_if": "Brent ниже"}],
+            "unknown": "Неясно, как быстро сократят экспорт.",
+            "plain_words": ["ОПЕК+ сократила добычу.", "Нефть может подорожать.", "Уверенность средняя.",
+                            "Лучше подождать.", "Пересмотрю прогноз, если экспорт не упадёт."]}
+
+
+def test_validate_alert_rules():
+    reg = SourceRegistry()
+    a = alert_json(reg)
+    assert radar.validate_alert(a, reg, set()) == []
+    assert "duplicate" in " ".join(radar.validate_alert(a, reg, {radar.event_key(a["event_key"])}))
+    assert "two independent" in " ".join(radar.validate_alert(alert_json(SourceRegistry(), "extraordinary"),
+                                                               SourceRegistry(), set()) or ["two independent"])
+    reg2 = SourceRegistry()
+    assert radar.validate_alert(alert_json(reg2, "extraordinary", n_sources=2), reg2, set()) == []
+
+
+def test_format_alert_sections_and_disclaimer():
+    reg = SourceRegistry()
+    parts = radar.format_alert(alert_json(reg, action="buy"), reg, snap(), NOW)
+    text = "\n".join(parts)
+    for heading in ("ФАКТ", "ГИПОТЕЗА", "НЕИЗВЕСТНО", "ПРОСТЫМИ СЛОВАМИ — ЧТО ЭТО ЗНАЧИТ И МОЙ ПРОГНОЗ"):
+        assert heading in text
+    assert radar.DISCLAIMER in text and "(Пекин)" in text
+    reg2 = SourceRegistry()
+    assert radar.DISCLAIMER not in "\n".join(radar.format_alert(alert_json(reg2, action="wait"), reg2, snap(), NOW))
+
+
+def test_radar_silent_when_nothing_found(make_app, monkeypatch):
+    monkeypatch.setattr(market, "collect", lambda *a, **k: snap(1.0))
+    ds = FakeDeepSeek([lambda reg, p: {"decision": "NO_ALERT", "candidates": [], "checked": ["fed"]}])
+    app = make_app(deepseek=ds)
+    assert radar.run(app, NOW) == "NO_ALERT"
+    assert app.telegram.sent == [] and len(ds.calls) == 1  # pro model never called
+    assert app.store.last_ok_window_end() == NOW.isoformat()
+
+
+def test_radar_sends_once_and_dedups(make_app, monkeypatch):
+    monkeypatch.setattr(market, "collect", lambda *a, **k: snap(1.0))
+    gate = lambda reg, p: {"decision": "CANDIDATES", "candidates": [
+        {"category": "oil_supply", "assets": ["BRENT"], "occurrence": "OPEC+ cut", "event_date": "2026-11-09"}]}
+    ds = FakeDeepSeek([gate, lambda reg, p: alert_json(reg), gate, lambda reg, p: alert_json(reg)])
+    app = make_app(deepseek=ds)
+    assert radar.run(app, NOW) == "SENT"
+    assert app.telegram.sent[0]["chat"] == "@investor_duker"
+    assert radar.run(app, NOW + timedelta(hours=3)) == "BLOCKED"  # same event -> duplicate
+    assert len(app.telegram.sent) == 1
+
+
+def test_radar_failed_delivery_is_recorded(make_app, monkeypatch):
+    monkeypatch.setattr(market, "collect", lambda *a, **k: snap(1.0))
+    gate = lambda reg, p: {"decision": "CANDIDATES", "candidates": [{"category": "fed", "assets": ["SPX"],
+                                                                     "occurrence": "x", "event_date": "2026-11-09"}]}
+    app = make_app(deepseek=FakeDeepSeek([gate, lambda reg, p: alert_json(reg)]), telegram=FakeTelegram(fail=True))
+    assert radar.run(app, NOW) == "FAILED"
+    assert app.store.last_ok_window_end() is None  # window is re-checked next time

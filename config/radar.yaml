@@ -1,0 +1,36 @@
+# Thresholds for numeric triggers of the Invest Radar. Indicative, not mechanical:
+# a trigger only asks DeepSeek to look closer; the final decision is in the prompt.
+
+crypto:
+  BTC: {move_pct: 5.0}
+  ETH: {move_pct: 7.0}
+  SOL: {move_pct: 10.0}
+  funding_abs_pct: 0.05        # |funding rate| per 8h, in percent (0.05% = extreme)
+  open_interest_change_pct: 15 # 24h change of BTC/ETH futures open interest
+
+equities:
+  SPX: {move_pct: 2.0}         # cash index vs previous close, only while/after a session inside the window
+  ES: {move_pct: 2.0}          # E-mini futures, used when the cash market is closed
+  NDX: {move_pct: 2.5}
+  RUT: {move_pct: 3.0}
+  VIX: {level: 25, change_pct: 20}
+
+oil:
+  BRENT: {move_pct: 5.0}
+  WTI: {move_pct: 5.0}
+
+rates:
+  US2Y: {change_bp: 15}
+  US10Y: {change_bp: 15}
+
+dollar:
+  DXY: {move_pct: 1.0}
+
+etf_flows:
+  BTC: {abs_musd: 500}
+  ETH: {abs_musd: 200}
+  reversal_after_days: 5       # flows turn after N sessions in one direction
+
+window:
+  default_hours: 3
+  max_hours: 12
