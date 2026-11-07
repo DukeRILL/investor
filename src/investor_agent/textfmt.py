@@ -10,20 +10,24 @@ TG_LIMIT = 4096
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
 
 
-def _cite_html(text: str, registry: SourceRegistry | None) -> str:
+def _cite_html(text: str, registry: SourceRegistry | None, radar_rules: bool = False) -> str:
     def repl(m: re.Match) -> str:
         src = registry.get(m.group(1)) if registry else None
-        if not src or not src.citable:
+        if not src or (radar_rules and not src.citable):
             return ""
         return f'<a href="{escape(src.url, quote=True)}">[{escape(src.publisher or src.id)}]</a>'
     return CITE_RE.sub(repl, text)
 
 
-def to_tg_html(text: str, registry: SourceRegistry | None = None) -> str:
-    """Escape everything, then re-apply bold and source links."""
-    html = escape(cap_citations(scrub_text(text or ""), registry), quote=False)
+def to_tg_html(text: str, registry: SourceRegistry | None = None, radar_rules: bool = False) -> str:
+    """Escape everything, then re-apply bold and source links.
+    radar_rules=True applies the Invest Radar source rule (docs/RULES.md §5): no Beijing/FRED mentions,
+    citable sources only, at most 3 links per paragraph."""
+    if radar_rules:
+        text = cap_citations(scrub_text(text or ""), registry)
+    html = escape(text or "", quote=False)
     html = BOLD_RE.sub(lambda m: f"<b>{m.group(1)}</b>", html)
-    html = _cite_html(html, registry)
+    html = _cite_html(html, registry, radar_rules)
     html = re.sub(r"[ \t]+\n", "\n", html)
     return html.strip()
 
@@ -110,7 +114,7 @@ def _inline_nodes(text: str, registry: SourceRegistry | None, cite: str = "publi
             nodes.append({"tag": "b", "children": [m.group(1)]})
         else:
             src = registry.get(m.group(2)) if registry else None
-            if src and src.citable:
+            if src:
                 label = src.id[1:] if cite == "number" else (src.publisher or src.id)
                 nodes.append({"tag": "a", "attrs": {"href": src.url}, "children": [f"[{label}]"]})
         pos = m.end()
@@ -123,8 +127,7 @@ def text_to_nodes(text: str, registry: SourceRegistry | None = None, cite: str =
     """Paragraphs -> <p>, '• ' lines -> <ul>, '1. ' lines -> <ol>, '### ' lines -> <h4>.
     cite='number' renders [S12] as a short numbered link [12] instead of the publisher name."""
     nodes: list = []
-    text = cap_citations(scrub_text(text or ""), registry)
-    for para in re.split(r"\n\s*\n", text.strip()):
+    for para in re.split(r"\n\s*\n", (text or "").strip()):
         lines = [ln.strip() for ln in para.split("\n") if ln.strip()]
         bullets: list = []
         numbered: list = []

@@ -105,21 +105,21 @@ def format_alert(alert: dict, registry: SourceRegistry, snap: market.Snapshot, c
             head.append(f"📍 Событие: {fmt_bj(datetime.fromisoformat(alert['event_time_utc'].replace('Z', '+00:00')))}")
         except ValueError:
             pass
-    head.append(f"<i>Почему это новое:</i> {to_tg_html(alert['why_new'], registry)}")
+    head.append(f"<i>Почему это новое:</i> {to_tg_html(alert['why_new'], registry, radar_rules=True)}")
     blocks = ["\n".join(head)]
     lines = snapshot_lines(snap, (alert.get("event_key") or {}).get("assets") or [])
     if lines:
         blocks.append("📊 <b>Рынок сейчас</b>\n" + "\n".join(lines))
-    blocks.append("<b>ФАКТ</b>\n" + to_tg_html(alert["fact"], registry))
-    hyp = "<b>ГИПОТЕЗА</b>\n" + to_tg_html(alert["hypothesis"], registry)
+    blocks.append("<b>ФАКТ</b>\n" + to_tg_html(alert["fact"], registry, radar_rules=True))
+    hyp = "<b>ГИПОТЕЗА</b>\n" + to_tg_html(alert["hypothesis"], registry, radar_rules=True)
     for sc in alert.get("scenarios") or []:
-        hyp += (f"\n\n▸ <b>{escape(sc.get('name', 'Сценарий'))}:</b> {to_tg_html(sc.get('text', ''), registry)}"
+        hyp += (f"\n\n▸ <b>{escape(sc.get('name', 'Сценарий'))}:</b> {to_tg_html(sc.get('text', ''), registry, radar_rules=True)}"
                 f"\n   ✅ Подтвердит: {escape(sc.get('confirm_if', ''))}"
                 f"\n   ❌ Отменит: {escape(sc.get('invalidate_if', ''))}")
     blocks.append(hyp)
-    blocks.append("<b>НЕИЗВЕСТНО</b>\n" + to_tg_html(alert["unknown"], registry))
+    blocks.append("<b>НЕИЗВЕСТНО</b>\n" + to_tg_html(alert["unknown"], registry, radar_rules=True))
     plain = " ".join(str(s).strip() for s in alert["plain_words"])
-    final = ("<b>ПРОСТЫМИ СЛОВАМИ — ЧТО ЭТО ЗНАЧИТ И МОЙ ПРОГНОЗ</b>\n" + to_tg_html(plain, registry) +
+    final = ("<b>ПРОСТЫМИ СЛОВАМИ — ЧТО ЭТО ЗНАЧИТ И МОЙ ПРОГНОЗ</b>\n" + to_tg_html(plain, registry, radar_rules=True) +
              f"\n\nУверенность: <b>{CONFIDENCE.get(alert.get('confidence'), '—')}</b> · "
              f"Действие: <b>{ACTIONS[alert['action']]}</b>")
     if alert.get("action") == "buy":

@@ -175,9 +175,9 @@ def test_non_citable_sources_are_not_linked():
     reg = SourceRegistry()
     reg.add("https://fred.stlouisfed.org/series/DGS10")
     reg.add("https://www.reuters.com/a")
-    html = to_tg_html("Доходность выросла [S1] [S2].", reg)
+    html = to_tg_html("Доходность выросла [S1] [S2].", reg, radar_rules=True)
     assert "stlouisfed" not in html and "reuters.com" in html
-    assert "stlouisfed" not in str(text_to_nodes("Доходность выросла [S1].", reg))
+    assert "stlouisfed" in str(text_to_nodes("Доходность выросла [S1].", reg))  # Unicorn School: rule off
 
 
 def test_at_most_three_links_per_paragraph():
@@ -187,8 +187,7 @@ def test_at_most_three_links_per_paragraph():
     for i in range(5):
         reg.add(f"https://news{i}.example.com/a")
     text = "Первый факт [S1] [S2]. Второй [S3] [S4] [S5].\n\nНовый абзац [S4] [S5]."
-    html = to_tg_html(text, reg)
+    html = to_tg_html(text, reg, radar_rules=True)
     first, second = html.split("\n\n")
     assert first.count("<a ") == 3 and second.count("<a ") == 2
-    nodes = text_to_nodes(text, reg)
-    assert str(nodes[0]).count("'href'") == 3
+    assert to_tg_html(text, reg).count("<a ") == 7  # rule applies to the radar only
