@@ -6,6 +6,7 @@ Every call goes through the off-peak guard (docs/RULES.md, rule 1).
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
@@ -84,6 +85,7 @@ class DeepSeekClient:
         self.http, self.api_key, self.base_url = http, api_key, base_url.rstrip("/")
         self.clock, self.enforce_offpeak = clock, enforce_offpeak
         self.usage = Usage()
+        self.invalid_retries, self.invalid_retry_delay = 3, 5.0
 
     # --- guard -----------------------------------------------------------------------------
     def _guard(self, min_minutes: float = 0) -> None:
@@ -101,7 +103,6 @@ class DeepSeekClient:
     # --- raw endpoints -----------------------------------------------------------------------
     def chat(self, model: str, messages: list[dict], tools: list | None = None, json_mode: bool = False,
              temperature: float = 0.3, max_tokens: int | None = None) -> dict:
-        self._guard(min_minutes=2)
         body: dict[str, Any] = {"model": model, "messages": messages, "temperature": temperature}
         if tools:
             body["tools"] = tools
@@ -109,10 +110,20 @@ class DeepSeekClient:
             body["response_format"] = {"type": "json_object"}
         if max_tokens:
             body["max_tokens"] = max_tokens
-        data = self.http.request("POST", f"{self.base_url}/chat/completions", json_body=body,
-                                 headers=self._headers(), timeout=600)
-        self.usage.add(model, data.get("usage"))
-        return data["choices"][0]["message"]
+        for attempt in range(1, self.invalid_retries + 1):
+            self._guard(min_minutes=2)
+            data = self.http.request("POST", f"{self.base_url}/chat/completions", json_body=body,
+                                     headers=self._headers(), timeout=600)
+            if isinstance(data, dict) and data.get("choices"):
+                self.usage.add(model, data.get("usage"))
+                return data["choices"][0]["message"]
+            # DeepSeek sometimes answers 200 with an empty/non-JSON body: retry, then fail with a clear error.
+            snippet = (data if isinstance(data, str) else json.dumps(data, ensure_ascii=False, default=str))[:300]
+            log.warning("invalid chat response (attempt %d/%d): %s %s", attempt, self.invalid_retries,
+                        type(data).__name__, snippet)
+            if attempt < self.invalid_retries:
+                time.sleep(self.invalid_retry_delay * attempt)
+        raise HttpError(502, f"DeepSeek returned an invalid chat response: {type(data).__name__} {snippet}")
 
     def search(self, query: str, count: int = 8) -> list[dict]:
         self._guard(min_minutes=1)

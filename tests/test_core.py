@@ -5,6 +5,7 @@ import pytest
 
 from investor_agent.config import Settings, load_settings
 from investor_agent.deepseek import DeepSeekClient, parse_json
+from investor_agent.http import HttpError
 from investor_agent.quality import count_sentences, is_russian
 from investor_agent.scheduler import next_daily, next_radar, next_weekly
 from investor_agent.sources import SourceRegistry
@@ -78,6 +79,22 @@ def test_research_loop_registers_real_sources_only():
     assert client.research("deepseek-flash", "sys", {"a": 1}, reg) == {"ok": True}
     assert reg.get("S1").fetched and reg.get("S1").url == "https://reuters.com/a"
     assert client.usage.searches == 1 and client.usage.fetches == 1 and client.usage.cost_usd() > 0
+
+
+def test_chat_retries_empty_200_then_succeeds():
+    ok = {"choices": [{"message": {"role": "assistant", "content": "{}"}}]}
+    http = FakeHttp([None, "", ok])
+    client = DeepSeekClient(http, "key", clock=lambda: bj(2026, 11, 7, 3, 0))
+    client.invalid_retry_delay = 0
+    assert client.chat("deepseek-flash", [])["content"] == "{}"
+    assert len(http.requests) == 3
+
+
+def test_chat_raises_clear_error_on_persistent_empty_200():
+    client = DeepSeekClient(FakeHttp([None, None, None]), "key", clock=lambda: bj(2026, 11, 7, 3, 0))
+    client.invalid_retry_delay = 0
+    with pytest.raises(HttpError, match="invalid chat response"):
+        client.chat("deepseek-flash", [])
 
 
 def test_parse_json_tolerates_wrapping():
