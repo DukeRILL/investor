@@ -179,3 +179,14 @@ def test_radar_failed_delivery_is_recorded(make_app, monkeypatch):
     app = make_app(deepseek=FakeDeepSeek([gate, lambda reg, p: alert_json(reg)]), telegram=FakeTelegram(fail=True))
     assert radar.run(app, NOW) == "FAILED"
     assert app.store.last_ok_window_end() is None  # window is re-checked next time
+
+
+def test_weekly_report(make_app):
+    from investor_agent import report
+    app = make_app()
+    app.store.usage_add("radar", 0.40, {"searches": 30, "fetches": 5})
+    app.store.usage_add("unicorn_prepare", 1.10, {"searches": 40, "fetches": 25})
+    app.deepseek.balance = lambda: {"is_available": True, "balance_infos": [{"currency": "USD", "total_balance": "15.00"}]}
+    assert report.send_weekly_report(app) == "sent"
+    msg = app.telegram.sent[0]
+    assert msg["chat"] == "111" and "$1.50" in msg["html"] and "$15.00" in msg["html"] and "10 нед" in msg["html"]

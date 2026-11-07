@@ -211,6 +211,18 @@ class Store:
             c.execute("INSERT INTO usage(at, job, cost_usd, detail) VALUES (?,?,?,?)",
                       (utcnow(), job, cost_usd, json.dumps(detail)))
 
+    def usage_by_job(self, since_iso: str) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        with self._conn() as c:
+            for r in c.execute("SELECT job, cost_usd, detail FROM usage WHERE at >= ?", (since_iso,)):
+                item = out.setdefault(r["job"], {"cost": 0.0, "runs": 0, "searches": 0, "fetches": 0})
+                d = json.loads(r["detail"])
+                item["cost"] += r["cost_usd"]
+                item["runs"] += 1
+                item["searches"] += int(d.get("searches", 0))
+                item["fetches"] += int(d.get("fetches", 0))
+        return out
+
     def usage_since(self, since_iso: str) -> float:
         with self._conn() as c:
             row = c.execute("SELECT COALESCE(SUM(cost_usd),0) s FROM usage WHERE at >= ?", (since_iso,)).fetchone()

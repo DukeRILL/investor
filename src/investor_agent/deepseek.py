@@ -132,6 +132,12 @@ class DeepSeekClient:
             self.usage.fetches += 1
         return data
 
+    def balance(self) -> dict:
+        """Account balance (free call, not a model call)."""
+        if not self.api_key:
+            raise RuntimeError("DEEPSEEK_API_KEY is not configured")
+        return self.http.request("GET", f"{self.base_url}/user/balance", headers=self._headers(), timeout=30)
+
     # --- agent -------------------------------------------------------------------------------
     def complete_json(self, model: str, system: str, payload: Any, temperature: float = 0.3) -> dict:
         message = self.chat(model, [{"role": "system", "content": system},

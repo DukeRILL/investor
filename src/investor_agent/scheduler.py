@@ -4,11 +4,12 @@ import logging
 import threading
 import time as _time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Callable
 
 from .app import App
 from .radar import pipeline as radar
+from .report import send_weekly_report
 from .timeutil import BEIJING, PeakHoursError, is_peak, next_offpeak, now_bj
 from .unicorn import pipeline as unicorn
 
@@ -17,7 +18,7 @@ log = logging.getLogger(__name__)
 UNICORN_PREPARE_TIMES = ((3, 0), (5, 0), (7, 0))   # first run + two retries, all before 08:45
 UNICORN_PUBLISH_TIME = (10, 0)
 RADAR_EVERY_HOURS = 3
-COST_REPORT_TIME = (21, 30)
+WEEKLY_REPORT = (6, 20, 0)   # Sunday 20:00 Beijing
 
 
 def next_daily(now: datetime, times: tuple) -> datetime:
@@ -41,6 +42,13 @@ def next_radar(now: datetime) -> datetime:
     return next_offpeak(slot) if is_peak(slot) else slot
 
 
+def next_weekly(now: datetime) -> datetime:
+    weekday, hh, mm = WEEKLY_REPORT
+    now = now.astimezone(BEIJING)
+    dt = now.replace(hour=hh, minute=mm, second=0, microsecond=0) + timedelta(days=(weekday - now.weekday()) % 7)
+    return dt if dt > now else dt + timedelta(days=7)
+
+
 @dataclass
 class Job:
     name: str
@@ -60,7 +68,7 @@ class Scheduler:
             Job("unicorn_publish", lambda: unicorn.publish(app), lambda n: next_daily(n, (UNICORN_PUBLISH_TIME,)),
                 uses_deepseek=False),
             Job("radar", lambda: radar.run(app), next_radar),
-            Job("cost_report", self.cost_report, lambda n: next_daily(n, (COST_REPORT_TIME,)), uses_deepseek=False),
+            Job("weekly_report", lambda: send_weekly_report(app), next_weekly, uses_deepseek=False),
         ]
         now = clock()
         for job in self.jobs:
@@ -74,12 +82,6 @@ class Scheduler:
         draft = self.app.store.draft_get(unicorn.issue_date(now))
         if draft and draft["status"] == "ready":
             self.jobs[1].next_run = now
-
-    def cost_report(self) -> str:
-        since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
-        cost = self.app.store.usage_since(since)
-        self.app.notify_admin(f"Расход DeepSeek за 24 часа (оценка по ночным ценам): ${cost:.2f}")
-        return "ok"
 
     def _execute(self, job: Job) -> None:
         try:

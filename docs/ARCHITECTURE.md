@@ -9,7 +9,7 @@
 │   ├─ 03:00/05:00/07:00  unicorn.prepare  ─┐
 │   ├─ 10:00              unicorn.publish   │  DeepSeek: только вне 08:45–12:15 и 13:45–18:15 в будни
 │   ├─ каждые 3 ч         radar.run        ─┘
-│   └─ 21:30              отчёт о расходах → админу
+│   └─ вс 20:00           отчёт за неделю: расходы + остаток на счёте DeepSeek → админу
 │
 ├─ DeepSeek (deepseek.py)
 │   ├─ chat/completions с инструментами web_search и fetch_page

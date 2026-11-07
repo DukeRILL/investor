@@ -6,7 +6,7 @@ import pytest
 from investor_agent.config import Settings, load_settings
 from investor_agent.deepseek import DeepSeekClient, parse_json
 from investor_agent.quality import count_sentences, is_russian
-from investor_agent.scheduler import next_daily, next_radar
+from investor_agent.scheduler import next_daily, next_radar, next_weekly
 from investor_agent.sources import SourceRegistry
 from investor_agent.textfmt import split_html, text_to_nodes, to_tg_html
 from investor_agent.timeutil import BEIJING, PeakHoursError, is_peak, minutes_until_peak, next_offpeak
@@ -43,6 +43,8 @@ def test_scheduler_times():
     assert next_radar(bj(2026, 11, 7, 7, 10)) == bj(2026, 11, 7, 9, 0)     # Saturday: no shift
     assert next_daily(bj(2026, 11, 9, 4, 0), ((3, 0), (5, 0), (7, 0))) == bj(2026, 11, 9, 5, 0)
     assert next_daily(bj(2026, 11, 9, 10, 0), ((10, 0),)) == bj(2026, 11, 10, 10, 0)
+    assert next_weekly(bj(2026, 11, 7, 14, 0)) == bj(2026, 11, 8, 20, 0)    # Sat -> Sun 20:00
+    assert next_weekly(bj(2026, 11, 8, 20, 0)) == bj(2026, 11, 15, 20, 0)   # right after -> next Sunday
 
 
 class FakeHttp:
