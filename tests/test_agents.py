@@ -182,7 +182,9 @@ def test_radar_sends_once_and_dedups(make_app, monkeypatch):
     ds = FakeDeepSeek([gate, lambda reg, p: alert_json(reg), gate, lambda reg, p: alert_json(reg)])
     app = make_app(deepseek=ds)
     assert radar.run(app, NOW) == "SENT"
-    assert app.telegram.sent[0]["chat"] == "@investor_duker"
+    assert app.telegram.sent[0]["chat"] == "111"  # radar defaults to draft: admin chat, not the channel
+    app.settings.radar_publish_mode = "auto"
+    assert app.target_chat(radar=True) == "@investor_duker" and app.target_chat() == "@investor_duker"
     assert radar.run(app, NOW + timedelta(hours=3)) == "BLOCKED"  # same event -> duplicate
     assert len(app.telegram.sent) == 1
 
