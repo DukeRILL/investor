@@ -69,7 +69,7 @@ def run(app: App, now: datetime | None = None) -> str:
         app.store.set(key, f"skipped:{len(alerts)}")
         return "SKIPPED"
     try:
-        mid = app.telegram.send(app.target_chat(), format_digest(alerts, end))
+        mid = app.telegram.send(app.target_chat(radar=True), format_digest(alerts, end))
     except Exception as exc:  # noqa: BLE001
         app.notify_admin(f"Инвест радар: итоги дня не отправлены: {exc}")
         return "FAILED"

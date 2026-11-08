@@ -231,7 +231,7 @@ def _run(app: App, now: datetime, start: datetime, end: datetime, cfg: dict) -> 
     alert["_snapshot_levels"] = {k: q.price for k, q in snap.quotes.items()}
     alert_id = app.store.alert_create(key, alert["headline"], alert)
     try:
-        mids = app.telegram.send_series(app.target_chat(), parts,
+        mids = app.telegram.send_series(app.target_chat(radar=True), parts,
                                         reply_to=previous["message_ids"][0] if previous else None)
     except Exception as exc:  # noqa: BLE001
         app.store.alert_mark(alert_id, "failed")

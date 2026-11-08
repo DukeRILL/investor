@@ -28,9 +28,10 @@ class App:
     def prompt(self, name: str) -> str:
         return (self.settings.prompts_dir / f"{name}.md").read_text(encoding="utf-8")
 
-    def target_chat(self) -> str:
-        """Channel in auto mode; admin chat in draft mode."""
-        if self.settings.publish_mode == "auto":
+    def target_chat(self, radar: bool = False) -> str:
+        """Channel in auto mode; admin chat in draft mode. Radar has its own mode."""
+        mode = self.settings.radar_publish_mode if radar else self.settings.publish_mode
+        if mode == "auto":
             return self.settings.telegram_chat_id
         return self.settings.telegram_admin_chat_id or self.settings.telegram_chat_id
 
