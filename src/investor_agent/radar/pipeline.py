@@ -112,6 +112,12 @@ def continuation_line(previous: dict) -> str:
 MAX_ALERT_CHARS = 3000  # visible characters of the whole post (owner, 2026-11-08)
 
 
+def _is_crypto(alert: dict) -> bool:
+    ek = alert.get("event_key") or {}
+    assets = {str(a).upper() for a in ek.get("assets") or []}
+    return str(ek.get("category", "")).startswith("crypto") or bool(assets & {"BTC", "ETH", "SOL", "CRYPTO", "ALTS"})
+
+
 def _spoiler(body: str) -> str:
     """Collapsed under its heading (Telegram expandable quote); owner's rule, 2026-11-08."""
     return f"<blockquote expandable>{body}</blockquote>"
@@ -143,9 +149,10 @@ def format_alert(alert: dict, registry: SourceRegistry, snap: market.Snapshot, c
     blocks.append(hyp.replace("\n", "\n<blockquote expandable>", 1) + "</blockquote>")
     blocks.append("<b>НЕИЗВЕСТНО</b>\n" + _spoiler(to_tg_html(alert["unknown"], registry, radar_rules=True)))
     plain = " ".join(str(s).strip() for s in alert["plain_words"])
-    final = ("<b>ПРОСТЫМИ СЛОВАМИ — ЧТО ЭТО ЗНАЧИТ И МОЙ ПРОГНОЗ</b>\n" + _spoiler(to_tg_html(plain, registry, radar_rules=True)) +
-             f"\n\nУверенность: <b>{CONFIDENCE.get(alert.get('confidence'), '—')}</b> · "
-             f"Действие: <b>{ACTIONS[alert['action']]}</b>")
+    final = ("<b>ПРОСТЫМИ СЛОВАМИ — ЧТО ЭТО ЗНАЧИТ И МОЙ ПРОГНОЗ</b>\n" + to_tg_html(plain, registry, radar_rules=True))
+    if _is_crypto(alert):  # recommendation line only for crypto events (owner, 2026-11-08)
+        final += (f"\n\nУверенность: <b>{CONFIDENCE.get(alert.get('confidence'), '—')}</b> · "
+                  f"Действие: <b>{ACTIONS[alert['action']]}</b>")
     final += f"\n\n<i>{DISCLAIMER}</i>"  # always, whatever the action (standing agreement, RULES.md section 5)
     blocks.append(final)
     blocks[0] += "\n" + reading_line("\n".join(blocks))
