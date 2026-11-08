@@ -162,6 +162,64 @@ def validate_report(report: dict, registry: SourceRegistry) -> list[str]:
     return errors
 
 
+# --- length top-up -----------------------------------------------------------------------------
+
+EXPAND_ROUNDS = 4
+EXPAND_TARGET_WORDS = MIN_READ_MINUTES * READING_WPM + 300  # margin over the minimum
+EXPAND_MAX_TOKENS = 8000
+EXPAND_PROMPT = (
+    "You are an editor of a Russian-language business article. Some sections are too short. Rewrite ONLY the "
+    "sections listed in `expand`: keep their content, citations like [S3] and tone, and add depth - concrete facts, "
+    "dates, numbers, quotes, examples, mechanisms, comparisons, from `known_sources` only (no invented facts, no "
+    "filler, no repetition). Each section must reach at least `target_words` words. Write in Russian. "
+    'Return JSON: {"sections":[{"id":"...","body":"..."}]} with the listed sections only.')
+
+
+def _is_length_error(err: str) -> bool:
+    return err.startswith("article reads for") or (err.startswith("section '") and "too short" in err)
+
+
+def _words(text: str) -> int:
+    return len((text or "").split())
+
+
+def _expand_short(app: App, report: dict, registry: SourceRegistry, payload: dict) -> list[str]:
+    """Several cheap rounds that lengthen the shortest sections only. Returns the remaining validation errors."""
+    ds = app.deepseek
+    errors = validate_report(report, registry)
+    for rnd in range(1, EXPAND_ROUNDS + 1):
+        if not errors or not all(_is_length_error(e) for e in errors):
+            break
+        sections = {x.get("id"): x for x in report.get("sections", []) if isinstance(x, dict)}
+        total = sum(_words(x.get("body", "")) for x in sections.values())
+        missing = max(EXPAND_TARGET_WORDS - total, 0)
+        weak = sorted((sid for sid in SECTION_IDS if sid != "essence"),
+                      key=lambda sid: _words((sections.get(sid) or {}).get("body", "")))
+        picked = weak[:max(3, min(len(weak), 3 + rnd))]
+        per = max(120, missing // max(len(picked), 1) + 80)
+        job = [{"id": sid, "body": (sections.get(sid) or {}).get("body", ""),
+                "target_words": _words((sections.get(sid) or {}).get("body", "")) + per} for sid in picked]
+        log.info("unicorn length top-up %d/%d: %d words of %d, expanding %s", rnd, EXPAND_ROUNDS, total,
+                 EXPAND_TARGET_WORDS, picked)
+        try:
+            out = app.deepseek.complete_json(app.settings.deepseek_model_pro, EXPAND_PROMPT, {
+                "expand": job, "known_sources": registry.brief(), "company": payload.get("company", {}).get("name"),
+                "need_more_words_total": missing}, max_tokens=EXPAND_MAX_TOKENS)
+        except PeakHoursError:
+            raise
+        except Exception:  # noqa: BLE001 - a failed round must not lose the draft
+            log.exception("length top-up round failed")
+            continue
+        for item in out.get("sections") or []:
+            sec = sections.get(item.get("id")) if isinstance(item, dict) else None
+            body = str(item.get("body", "")) if isinstance(item, dict) else ""
+            if sec is not None and item.get("id") in picked and _words(body) > _words(sec.get("body", "")):
+                sec["body"] = body
+        strip_unknown_citations(report, registry)
+        errors = validate_report(report, registry)
+    return errors
+
+
 # --- jobs --------------------------------------------------------------------------------------
 
 def issue_date(now: datetime | None = None) -> str:
@@ -242,6 +300,8 @@ def _prepare(app: App, today: str) -> str:
         }, registry, max_tool_calls=20, cache_ttl=SEARCH_CACHE_HOURS)
         strip_unknown_citations(report, registry)
         errors = validate_report(report, registry)
+    if errors and all(_is_length_error(e) for e in errors):
+        errors = _expand_short(app, report, registry, payload)  # top up thin sections, never regenerate the whole issue
     if errors:
         raise UnicornError("разбор не прошёл проверку: " + "; ".join(errors))
 

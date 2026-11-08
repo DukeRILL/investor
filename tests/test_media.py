@@ -340,3 +340,26 @@ def test_validate_requires_15_minutes_of_reading():
     assert unicorn.validate_report(report, reg) == []
     report["sections"][1]["body"] = report["sections"][1]["body"][:600]
     assert any("need at least 15" in e for e in unicorn.validate_report(report, reg))
+
+
+def test_short_report_is_topped_up_by_sections_not_regenerated():
+    from types import SimpleNamespace
+    reg = SourceRegistry()
+    report = good_report(reg)
+    for sec in report["sections"]:
+        if sec["id"] in ("idea", "start", "money", "breakthrough"):
+            sec["body"] = sec["body"][:600]
+    assert any("need at least 15" in e for e in unicorn.validate_report(report, reg))
+    calls = []
+
+    class FakeDS:
+        def complete_json(self, model, system, payload, temperature=0.3, max_tokens=None):
+            calls.append(payload["expand"])
+            assert max_tokens
+            return {"sections": [{"id": x["id"], "body": " ".join(["слово"] * (x["target_words"] + 400))}
+                                 for x in payload["expand"]]}
+
+    app = SimpleNamespace(deepseek=FakeDS(), settings=SimpleNamespace(deepseek_model_pro="pro"))
+    errors = unicorn._expand_short(app, report, reg, {"company": {"name": "X"}})
+    assert not any("need at least 15" in e for e in errors)
+    assert 1 <= len(calls) <= unicorn.EXPAND_ROUNDS

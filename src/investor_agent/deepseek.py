@@ -195,10 +195,11 @@ class DeepSeekClient:
         return self.http.request("GET", f"{self.base_url}/user/balance", headers=self._headers(), timeout=30)
 
     # --- agent -------------------------------------------------------------------------------
-    def complete_json(self, model: str, system: str, payload: Any, temperature: float = 0.3) -> dict:
+    def complete_json(self, model: str, system: str, payload: Any, temperature: float = 0.3,
+                      max_tokens: int | None = None) -> dict:
         message = self.chat(model, [{"role": "system", "content": system},
                                     {"role": "user", "content": _dump(payload)}], json_mode=True,
-                            temperature=temperature)
+                            temperature=temperature, max_tokens=max_tokens)
         return parse_json(message.get("content") or "")
 
     def research(self, model: str, system: str, payload: Any, registry: SourceRegistry,
