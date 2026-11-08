@@ -9,7 +9,7 @@ from html import escape
 from ..app import App
 from ..quality import is_russian, scrub_text, word_count
 from ..sources import SourceRegistry
-from ..textfmt import reading_line, split_html, to_tg_html
+from ..textfmt import reading_line, split_html, to_tg_html, visible_len
 from ..timeutil import PeakHoursError, fmt_bj, fmt_msk
 from . import market, triggers
 
@@ -107,6 +107,9 @@ def continuation_line(previous: dict) -> str:
     if plain:
         line += f"\n<i>Тогда мы писали:</i> {escape(scrub_text(str(plain[0]).strip()))}"
     return line
+
+
+MAX_ALERT_CHARS = 3000  # visible characters of the whole post (owner, 2026-11-08)
 
 
 def _spoiler(body: str) -> str:
@@ -233,6 +236,10 @@ def _run(app: App, now: datetime, start: datetime, end: datetime, cfg: dict) -> 
 
     previous = _previous_alert(app, alert.get("updates_previous"))
     parts = format_alert(alert, registry, snap, now, previous)
+    size = sum(visible_len(p) for p in parts)
+    if size > MAX_ALERT_CHARS:
+        log.warning("radar alert blocked: %d chars > %d", size, MAX_ALERT_CHARS)
+        return "BLOCKED", f"alert too long: {size} > {MAX_ALERT_CHARS} chars"
     key = event_key(alert["event_key"])
     alert["_snapshot_levels"] = {k: q.price for k, q in snap.quotes.items()}
     alert_id = app.store.alert_create(key, alert["headline"], alert)

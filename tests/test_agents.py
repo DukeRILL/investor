@@ -281,3 +281,17 @@ def test_strip_meta_notes():
     out = strip_meta_notes(t)
     assert out == "Правило: сначала докажите экономику."
     assert strip_meta_notes("Ramp выросла втрое.") == "Ramp выросла втрое."
+
+
+def test_radar_alert_over_3000_chars_is_blocked(make_app, monkeypatch):
+    monkeypatch.setattr(market, "collect", lambda *a, **k: snap(1.0))
+    gate = lambda reg, p: {"decision": "CANDIDATES", "candidates": [
+        {"category": "oil_supply", "assets": ["BRENT"], "occurrence": "OPEC+ cut", "event_date": "2026-11-09"}]}
+
+    def long_alert(reg, p):
+        a = alert_json(reg)
+        a["fact"] = a["fact"] + " " + "Подробность. " * 400
+        return a
+    app = make_app(deepseek=FakeDeepSeek([gate, long_alert]))
+    assert radar.run(app, NOW) == "BLOCKED"
+    assert app.telegram.sent == []
