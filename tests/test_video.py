@@ -469,3 +469,10 @@ def test_fill_gaps_uses_spares_then_second_founder_crop():
     ids = [s["image_id"] for s in videos[0]]
     assert ids[2] == "gen2" and ids.count("img02") == 2 and left == 5
     assert videos[0][ids.index("img02", 1)]["focus"] == 0
+
+
+def test_hook_is_mandatory():
+    good = {"hook": {"type": "number"}, "lines": [{"voice": "Подростки писали ботов. Теперь их компания стоит миллиарды.", "on_screen": "$5,1 млрд"}]}
+    assert P.hook_problems(good) == []
+    errs = " ".join(P.hook_problems({"lines": [{"voice": "Привет, сегодня расскажу про компанию Whop, которая выросла за пять лет в огромный бизнес", "on_screen": ""}]}))
+    assert "слов" in errs and "приветствием" in errs and "нет поля hook" in errs and "экранной" in errs

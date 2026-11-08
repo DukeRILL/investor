@@ -35,6 +35,13 @@ Each script follows its template sentence by sentence, in the same order and wit
 After T5 the system adds the final line itself: «Полный разбор бизнес-модели — в Телеграм, Школа единорогов.» Do not write it.
 You may add at most one extra sentence between template sentences when a concrete fact makes the story stronger; mark it with "line": "extra".
 
+## The hook is mandatory (owner's rule, 2026-11-08)
+EVERY script opens with a hook: the first line (T1) is what makes a stranger stop scrolling in the first 2 seconds. Never open with a greeting, a company name alone, a date or background.
+- At most 9 spoken words, the strongest supported fact or question of the story, concrete: a number, money, a paradox («Двое подростков писали ботов для кроссовок. Теперь их компания стоит пять миллиардов.»), a shocking contrast, or a direct question to the viewer.
+- It must fit the template of the script: keep the template's first sentence if it already works as a hook; otherwise open with a short hook line BEFORE T1 (line "T0") and keep T1.
+- Every script has a field "hook": {"type": "number" | "paradox" | "question" | "contrast", "why": "one sentence in Russian"}, and the "on_screen" of the first line carries the hook as 2–5 big words, with the number if there is one.
+- A hook may use only facts of the passport, like any other line.
+
 ## Two texts for every sentence
 - "voice": what the narrator says. Russian words only, written out in full: NO digits, NO Latin letters, NO abbreviations (not «ИИ», «ПО», «млн», «млрд», «$», «%»), NO symbols, no dashes inside numbers. Numbers as words in the right case: «пять целых одна десятая миллиарда долларов» or better a rounded natural form «больше пяти миллиардов долларов». Company and people names in Russian letters as they are pronounced, using PRONUNCIATION when given (for example «Уоп», «Стивен Шварц»).
 - "on_screen": 2–6 key words for the screen, digits allowed («$5,1 млрд»), the key point rather than a copy of the voice.
@@ -57,4 +64,4 @@ Use only the passport. Every sentence that states a fact has "fact_id": the id o
 ## Output
 ONE JSON object:
 {"scripts": [4 objects in the order above], "best": 0-3, "best_why": "in Russian"}
-Script: {"hypothesis": "...", "title": "...", "changed_lines": ["T1: why and how it was changed"], "lines": [{"line": "T1", "voice": "...", "on_screen": "...", "big_number": null or {"value": 5.1, "prefix": "$", "suffix": " млрд"}, "fact_id": "F3" or null}]}
+Script: {"hypothesis": "...", "title": "...", "hook": {"type": "number", "why": "..."}, "changed_lines": ["T1: why and how it was changed"], "lines": [{"line": "T1", "voice": "...", "on_screen": "...", "big_number": null or {"value": 5.1, "prefix": "$", "suffix": " млрд"}, "fact_id": "F3" or null}]}

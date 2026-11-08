@@ -322,3 +322,28 @@ def fill_gaps(videos: list[list[dict]], library: dict[str, dict], used: dict[str
         if not progress:
             break
     return sum(s["image_id"] is None for sh in videos for s in sh)
+
+
+HOOK_TYPES = {"number", "paradox", "question", "contrast"}
+HOOK_MAX_WORDS = 9
+BAD_OPENINGS = re.compile(r"^(привет|друзья|сегодня расскажу|давайте|в этом видео|компания )", re.I)
+
+
+def hook_problems(script: dict) -> list[str]:
+    """Хук обязателен в каждом сценарии (правило владельца 2026-11-08): первая озвученная фраза коротко останавливает зрителя."""
+    lines = [l for l in script.get("lines", []) if l.get("voice")]
+    if not lines:
+        return ["нет фраз"]
+    errs = []
+    first = lines[0]
+    n = len(first["voice"].split())
+    if n > HOOK_MAX_WORDS:
+        errs.append(f"хук {n} слов, нужно не больше {HOOK_MAX_WORDS}")
+    if BAD_OPENINGS.search(first["voice"].strip()):
+        errs.append("сценарий открывается приветствием или общей фразой, а не хуком")
+    hook = script.get("hook") or {}
+    if hook.get("type") not in HOOK_TYPES:
+        errs.append("нет поля hook с типом number, paradox, question или contrast")
+    if not (first.get("on_screen") or "").strip():
+        errs.append("у хука нет экранной надписи")
+    return errs
