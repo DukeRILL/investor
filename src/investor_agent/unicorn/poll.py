@@ -2,7 +2,8 @@
 
 Posted right after the 10:00 issue, closed (and deleted) at 04:00 Beijing = 23:00 Moscow, 30 minutes before the
 night preparation at 04:30.
-The 4 options come from a pool of 100 (poll_topics.py), no repeats within 7 days. The winning topic gives only a
+The 4 options come from a pool of 100 (poll_topics.py), no repeats within 7 days;
+a non-winner with >= 50% of the winner's votes is carried into the next poll. The winning topic gives only a
 search direction, not a company; with no votes the agent picks on its own. See docs/RULES.md.
 """
 
@@ -24,6 +25,8 @@ QUESTION = "Какую компанию разобрать в следующем
 OPTION_COUNT = 4
 OPTION_MAX = 100  # Telegram limit per poll option
 HISTORY_KEY = "unicorn_poll_history"  # kv: {option text: ISO date it was last offered}
+CARRY_KEY = "unicorn_poll_carry"  # kv: topics that must go into the next poll (>= 50% of the winner's votes)
+CARRY_SHARE = 0.5
 REPEAT_DAYS = 7  # an option shown in the last 7 days must not be offered again
 
 
@@ -52,18 +55,45 @@ def make_options(app: App, issue: str, recent: list[dict] | None = None, rng: ra
     rng = rng or random.Random()
     day = date.fromisoformat(issue)
     seen = {t for t, d in _history(app).items() if (day - date.fromisoformat(d)).days < REPEAT_DAYS}
-    free = [(c, t) for c, t in POOL if t not in seen]
+    carry = _carry(app)[:OPTION_COUNT]  # strongest first; ignore the 7-day and one-category rules
+    seen -= set(carry)
+    free = [(c, t) for c, t in POOL if t not in seen and t not in carry]
+    need = OPTION_COUNT - len(carry)
+    if need <= 0:
+        rng.shuffle(carry)
+        return carry
+    carry_cats = {c for c, t in POOL if t in carry}
     if len(free) < OPTION_COUNT:  # pool exhausted by a very long streak; cannot happen with 100 topics / 7 days
         free = list(POOL)
     by_cat: dict[str, list[str]] = {}
     for c, t in free:
         by_cat.setdefault(c, []).append(t)
-    cats = rng.sample(list(by_cat), min(OPTION_COUNT, len(by_cat)))
-    options = [rng.choice(by_cat[c]) for c in cats]
+    cats_all = list(by_cat)
+    rng.shuffle(cats_all)
+    cats_all.sort(key=lambda c: c in carry_cats)  # prefer categories not already taken by carried topics
+    options = [rng.choice(by_cat[c]) for c in cats_all[:need]]
     rest = [t for _, t in free if t not in options]
-    options += rng.sample(rest, OPTION_COUNT - len(options))
+    options += rng.sample(rest, need - len(options))
+    options += carry
     rng.shuffle(options)
     return options
+
+
+def _carry(app: App) -> list[str]:
+    try:
+        return list(json.loads(app.store.get(CARRY_KEY) or "[]"))
+    except ValueError:
+        return []
+
+
+def carry_over(options: list[str], counts: list[int]) -> list[str]:
+    """Non-winning options with >= 50% of the winner's votes, strongest first: they must be in the next poll."""
+    best = max(counts, default=0)
+    if best <= 0:
+        return []
+    win = set(tally(options, counts))
+    pairs = [(c, o) for o, c in zip(options, counts) if o not in win and c >= best * CARRY_SHARE]
+    return [o for _, o in sorted(pairs, key=lambda x: -x[0])]
 
 
 def remember(app: App, issue: str, options: list[str]) -> None:
@@ -71,6 +101,7 @@ def remember(app: App, issue: str, options: list[str]) -> None:
     day = date.fromisoformat(issue)
     hist = {t: d for t, d in _history(app).items() if (day - date.fromisoformat(d)).days < REPEAT_DAYS}
     hist.update({o: issue for o in options})
+    app.store.set(CARRY_KEY, "[]")  # the carried topics are now in a posted poll
     app.store.set(HISTORY_KEY, json.dumps(hist, ensure_ascii=False))
 
 
@@ -126,6 +157,8 @@ def close(app: App, issue: str, now: datetime | None = None) -> dict | None:
         log.warning("delete poll failed: %s", exc)
     topic = {"issue": issue, "options": options, "votes": counts, "total": sum(counts),
              "chosen": tally(options, counts), "closed_at": utc_iso()}
+    topic["carry"] = carry_over(options, counts)
+    app.store.set(CARRY_KEY, json.dumps(topic["carry"], ensure_ascii=False))
     app.store.set(topic_key(issue), json.dumps(topic, ensure_ascii=False))
     log.info("unicorn poll %s closed: votes=%s chosen=%s", issue, counts, topic["chosen"] or "agent's choice")
     return topic

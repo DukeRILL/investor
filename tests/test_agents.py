@@ -260,6 +260,25 @@ def test_poll_posted_after_issue_and_closed_not_before_23_moscow(make_app):
     assert poll.chosen_topics(app, "2026-11-10") == [sent_poll["options"][1]]  # recorded, idempotent
 
 
+def test_poll_carries_strong_runner_ups(make_app):
+    import random
+    from investor_agent.unicorn import poll
+    from investor_agent.unicorn.poll_topics import POOL
+    opts = [POOL[0][1], POOL[1][1], POOL[2][1], POOL[3][1]]
+    assert poll.carry_over(opts, [10, 5, 4, 0]) == [opts[1]]
+    assert poll.carry_over(opts, [0, 0, 0, 0]) == []
+    assert poll.carry_over(opts, [4, 4, 2, 1]) == [opts[2]]  # tie winners are not carried
+    app = make_app(deepseek=FakeDeepSeek([]))
+    poll.remember(app, "2026-11-10", opts)
+    import json
+    app.store.set(poll.CARRY_KEY, json.dumps([opts[1], opts[2]]))
+    nxt = poll.make_options(app, "2026-11-11", rng=random.Random(1))  # opts were shown yesterday
+    assert len(set(nxt)) == 4 and opts[1] in nxt and opts[2] in nxt
+    assert opts[0] not in nxt and opts[3] not in nxt
+    poll.remember(app, "2026-11-11", nxt)
+    assert poll._carry(app) == []
+
+
 def test_prepare_uses_reader_topic_and_falls_back(make_app):
     import json
     from investor_agent.unicorn import poll
