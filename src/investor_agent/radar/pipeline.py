@@ -10,7 +10,7 @@ from ..app import App
 from ..quality import is_russian, scrub_text, word_count
 from ..sources import SourceRegistry
 from ..textfmt import reading_line, split_html, to_tg_html
-from ..timeutil import PeakHoursError, fmt_bj
+from ..timeutil import PeakHoursError, fmt_bj, fmt_msk
 from . import market, triggers
 
 log = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ def _remember_triggers(app: App, keys: list[str]) -> None:
 
 def validate_alert(alert: dict, registry: SourceRegistry, history_keys: set[str]) -> list[str]:
     errors = []
-    for field in ("headline", "why_new", "fact", "hypothesis", "unknown"):
+    for field in ("headline", "fact", "hypothesis", "unknown"):
         if not str(alert.get(field, "")).strip():
             errors.append(f"{field} is empty")
     ek = alert.get("event_key") or {}
@@ -78,7 +78,7 @@ def validate_alert(alert: dict, registry: SourceRegistry, history_keys: set[str]
     key = event_key(ek)
     if key in history_keys and not alert.get("updates_previous"):
         errors.append("duplicate of an already reported event")
-    if word_count(text) > 1200:
+    if word_count(text) > 750:
         errors.append("alert is too long")
     return errors
 
@@ -94,7 +94,7 @@ def snapshot_lines(snap: market.Snapshot, assets: list[str]) -> list[str]:
         q = snap.quotes[k]
         ch = f"{q.change:+.2f}{q.change_unit}" if q.change is not None and q.change_unit == "%" else (
             f"{q.change:+.0f} б.п." if q.change is not None else "н/д")
-        observed = fmt_bj(datetime.fromisoformat(q.observed_at))
+        observed = fmt_msk(datetime.fromisoformat(q.observed_at))
         price = f"{q.price:,.2f}".replace(",", " ")
         lines.append(f"• {escape(q.label)}: <b>{price}</b> ({ch}, {escape(q.basis)}; {observed})")
     return lines
@@ -109,32 +109,38 @@ def continuation_line(previous: dict) -> str:
     return line
 
 
+def _spoiler(body: str) -> str:
+    """Collapsed under its heading (Telegram expandable quote); owner's rule, 2026-11-08."""
+    return f"<blockquote expandable>{body}</blockquote>"
+
+
 def format_alert(alert: dict, registry: SourceRegistry, snap: market.Snapshot, checked_at: datetime,
                  previous: dict | None = None) -> list[str]:
     head = [f"🚨 <b>{escape(scrub_text(alert['headline']))}</b>",
-            f"🕒 Проверка: {fmt_bj(checked_at)}"]
+            f"🕒 Проверка: {fmt_msk(checked_at)}"]
     if previous:
         head.insert(1, continuation_line(previous))
     if alert.get("event_time_utc"):
         try:
-            head.append(f"📍 Событие: {fmt_bj(datetime.fromisoformat(alert['event_time_utc'].replace('Z', '+00:00')))}")
+            head.append(f"📍 Событие: {fmt_msk(datetime.fromisoformat(alert['event_time_utc'].replace('Z', '+00:00')))}")
         except ValueError:
             pass
-    head.append(f"<i>Почему это новое:</i> {to_tg_html(alert['why_new'], registry, radar_rules=True)}")
+    if previous and str(alert.get("why_new", "")).strip():  # only for a continuation: what changed
+        head.append(f"<i>Что изменилось:</i> {to_tg_html(alert['why_new'], registry, radar_rules=True)}")
     blocks = ["\n".join(head)]
     lines = snapshot_lines(snap, (alert.get("event_key") or {}).get("assets") or [])
     if lines:
-        blocks.append("📊 <b>Рынок сейчас</b>\n" + "\n".join(lines))
-    blocks.append("<b>ФАКТ</b>\n" + to_tg_html(alert["fact"], registry, radar_rules=True))
+        blocks.append("📊 <b>Рынок сейчас</b>\n" + _spoiler("\n".join(lines)))
+    blocks.append("<b>ФАКТ</b>\n" + _spoiler(to_tg_html(alert["fact"], registry, radar_rules=True)))
     hyp = "<b>ГИПОТЕЗА</b>\n" + to_tg_html(alert["hypothesis"], registry, radar_rules=True)
     for sc in alert.get("scenarios") or []:
         hyp += (f"\n\n▸ <b>{escape(sc.get('name', 'Сценарий'))}:</b> {to_tg_html(sc.get('text', ''), registry, radar_rules=True)}"
                 f"\n   ✅ Подтвердит: {escape(sc.get('confirm_if', ''))}"
                 f"\n   ❌ Отменит: {escape(sc.get('invalidate_if', ''))}")
-    blocks.append(hyp)
-    blocks.append("<b>НЕИЗВЕСТНО</b>\n" + to_tg_html(alert["unknown"], registry, radar_rules=True))
+    blocks.append(hyp.replace("\n", "\n<blockquote expandable>", 1) + "</blockquote>")
+    blocks.append("<b>НЕИЗВЕСТНО</b>\n" + _spoiler(to_tg_html(alert["unknown"], registry, radar_rules=True)))
     plain = " ".join(str(s).strip() for s in alert["plain_words"])
-    final = ("<b>ПРОСТЫМИ СЛОВАМИ — ЧТО ЭТО ЗНАЧИТ И МОЙ ПРОГНОЗ</b>\n" + to_tg_html(plain, registry, radar_rules=True) +
+    final = ("<b>ПРОСТЫМИ СЛОВАМИ — ЧТО ЭТО ЗНАЧИТ И МОЙ ПРОГНОЗ</b>\n" + _spoiler(to_tg_html(plain, registry, radar_rules=True)) +
              f"\n\nУверенность: <b>{CONFIDENCE.get(alert.get('confidence'), '—')}</b> · "
              f"Действие: <b>{ACTIONS[alert['action']]}</b>")
     final += f"\n\n<i>{DISCLAIMER}</i>"  # always, whatever the action (standing agreement, RULES.md section 5)
@@ -200,7 +206,7 @@ def _run(app: App, now: datetime, start: datetime, end: datetime, cfg: dict) -> 
     history = app.store.radar_history(20)
     history_keys = {h["event_key"] for h in history}
     window = {"window_start_utc": start.isoformat(timespec="minutes"), "window_end_utc": end.isoformat(timespec="minutes"),
-              "window_start_beijing": fmt_bj(start), "window_end_beijing": fmt_bj(end)}
+              "window_start_msk": fmt_msk(start), "window_end_msk": fmt_msk(end)}
 
     registry = SourceRegistry()
     gate = ds.research(s.deepseek_model_fast, app.prompt("radar_gate"), {

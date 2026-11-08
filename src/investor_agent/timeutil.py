@@ -4,6 +4,7 @@ from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 BEIJING = ZoneInfo("Asia/Shanghai")
+MOSCOW = ZoneInfo("Europe/Moscow")
 
 # Weekday peak windows in Beijing time (UTC 01:00-04:00 and 06:00-10:00), widened by 15 min.
 PEAK_WINDOWS = ((time(8, 45), time(12, 15)), (time(13, 45), time(18, 15)))
@@ -62,6 +63,13 @@ def minutes_until_peak(dt: datetime) -> float:
 def fmt_bj(dt: datetime) -> str:
     """Published time; the post never says which time zone it is (owner's rule, docs/RULES.md §5)."""
     return to_bj(dt).strftime("%d.%m.%Y %H:%M")
+
+
+def fmt_msk(dt: datetime) -> str:
+    """Radar posts show Moscow time with a «(мск)» label (owner's rule, 2026-11-08)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(MOSCOW).strftime("%d.%m.%Y %H:%M") + " (мск)"
 
 
 RU_MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
