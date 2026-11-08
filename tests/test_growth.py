@@ -853,3 +853,113 @@ def test_tgstat_pause_mid_month_ends_on_the_beijing_first(make_app):
     app2 = tgstat_app(make_app, HttpError(429, "limit"))
     collect.collect_tgstat(app2, datetime(2026, 11, 10, 1, tzinfo=timezone.utc))
     assert db(app2).provider("tgstat")["disabled_until"] == "2026-11-30T16:00:00+00:00"
+
+
+# --- review 4 ---------------------------------------------------------------------------------------------------
+def test_crash_after_sendpoll_before_poll_key_is_recoverable_by_accept(make_app, monkeypatch):
+    app = make_app()
+    sent = []
+    app.telegram.send_poll = lambda chat, q, o: sent.append(1) or 41
+    monkeypatch.setattr(upoll, "remember", lambda *a: (_ for _ in ()).throw(Crash()))
+    with pytest.raises(Crash):
+        upoll.post(app, "2026-11-10", ["a", "b", "c", "d"])  # sendPoll succeeded, history/poll_key not written yet
+    monkeypatch.undo()
+    assert app.store.get(upoll.poll_key("2026-11-10")) is None
+    assert upoll.post(app, "2026-11-10", ["a", "b", "c", "d"]) is None and len(sent) == 1  # never repeated
+    with pytest.raises(ValueError):
+        upoll.accept(app, "2026-11-10", -1)
+    assert upoll.accept(app, "2026-11-10", 41) == "accepted"
+    saved = json.loads(app.store.get(upoll.poll_key("2026-11-10")))
+    assert saved["message_id"] == 41 and saved["options"] == ["a", "b", "c", "d"]
+    assert upoll._history(app) and upoll.accept(app, "2026-11-10", 41) == "nothing_to_accept"
+    assert upoll.post(app, "2026-11-10", ["a", "b", "c", "d"]) is None and len(sent) == 1
+
+
+def test_poll_key_and_history_are_written_before_the_intent_is_cleared(make_app):
+    app = make_app()
+    app.telegram.send_poll = lambda chat, q, o: 7
+    seen = []
+    real_set = app.store.set
+
+    def spy(key, value):
+        if key.startswith("unicorn_poll_intent:") and value == "":
+            seen.append(bool(app.store.get(upoll.poll_key("2026-11-10"))))
+        real_set(key, value)
+    app.store.set = spy
+    upoll.post(app, "2026-11-10", ["a", "b"])
+    assert seen == [True]
+
+
+def test_pages_same_count_but_different_split_never_creates(make_app):
+    from conftest import FakeTelegraph
+    graph, prog = FakeTelegraph(), Progress()
+    graph.crash_after_create = 2
+    with pytest.raises(Crash):
+        unicorn.create_pages(graph, "Заголовок", big_nodes(), prog.pair())
+    changed = big_nodes()
+    changed[1]["children"] = ["ж" * 20_000]  # same number of parts, different content
+    graph.crash_after_create = 0
+    with pytest.raises(RuntimeError):
+        unicorn.create_pages(graph, "Заголовок", changed, prog.pair())
+    retitled = big_nodes()
+    retitled[2]["children"] = ["Другой заголовок"]  # same count, other part title
+    with pytest.raises(RuntimeError):
+        unicorn.create_pages(graph, "Заголовок", retitled, prog.pair())
+    assert len(graph.pages) == 2
+    assert len(chain_ok(graph, unicorn.create_pages(graph, "Заголовок", big_nodes(), prog.pair()))) == 6
+
+
+def test_tgstat_500_then_200_is_one_wire_request_and_one_counted_call(make_app):
+    wire = Wire(lambda n, m, b: httpx.Response(500, text="boom") if n == 1 else httpx.Response(200, json=OK))
+    app = make_app(http=wire.http)
+    app.settings.tgstat_api_token = "T"
+    assert collect.collect_tgstat(app, datetime(2026, 11, 9, 1, tzinfo=timezone.utc)) == "error"
+    assert len(wire.calls) == 1 and db(app).provider_calls("tgstat", "2026-11") == 1
+
+
+def test_tgstat_429_is_not_retried_inside_the_client_either(make_app):
+    wire = Wire(lambda n, m, b: httpx.Response(429, text="limit") if n == 1 else httpx.Response(200, json=OK))
+    app = make_app(http=wire.http)
+    app.settings.tgstat_api_token = "T"
+    assert collect.collect_tgstat(app, datetime(2026, 11, 9, 1, tzinfo=timezone.utc)) == "error"
+    assert len(wire.calls) == 1 and db(app).provider_calls("tgstat", "2026-11") == 1
+    assert db(app).provider("tgstat")["disabled_until"] is not None
+
+
+def test_status_lists_every_unresolved_state_and_blocks_rollback(make_app):
+    app = make_app()
+    assert unicorn.unresolved_states(app) == {"publish": {}, "pages": {}, "poll": {}, "glossary": None}
+    app.store.set(unicorn._state_key(DAY), "sent:5")
+    app.store.set(f"unicorn_pages:{DAY}", json.dumps({"n": 2}))
+    app.store.set("unicorn_poll_intent:2026-11-10", "sending")
+    app.store.set("unicorn_poll_intent:2026-11-10:options", "[]")
+    app.store.set(glossary.STATE_KEY, json.dumps({"sending": 0}))
+    got = unicorn.unresolved_states(app)
+    assert got == {"publish": {DAY: "sent:5"}, "pages": {DAY: "unfinished"}, "poll": {"2026-11-10": "sending"},
+                   "glossary": "sending"}
+    for key in (unicorn._state_key(DAY), f"unicorn_pages:{DAY}", "unicorn_poll_intent:2026-11-10"):
+        app.store.set(key, "")
+    app.store.set(glossary.STATE_KEY, json.dumps({"message_ids": [1]}))
+    assert unicorn.unresolved_states(app) == {"publish": {}, "pages": {}, "poll": {}, "glossary": None}
+
+
+def test_pages_state_is_cleared_after_a_normal_publication(make_app):
+    app = published_app(make_app)
+    assert unicorn.unresolved_states(app) == {"publish": {}, "pages": {}, "poll": {}, "glossary": None}
+
+
+def test_telegraph_transport_errors_are_ambiguous(make_app):
+    class Down:
+        def request(self, *a, **k):
+            raise httpx.ReadTimeout("slow")
+    for exc in (httpx.ReadTimeout("slow"), httpx.ConnectError("down"), TimeoutError(), ConnectionResetError()):
+        class H:
+            def request(self, *a, _e=exc, **k):
+                raise _e
+        with pytest.raises(TelegramError) as info:
+            TelegraphClient(H(), lambda: "tok", lambda t: None).create_page("T", [])
+        assert info.value.ambiguous and "tok" not in str(info.value)
+    wire = Wire(lambda n, m, b: (_ for _ in ()).throw(httpx.ConnectError("down")))
+    with pytest.raises(TelegramError) as info:
+        TelegraphClient(wire.http, lambda: "tok", lambda t: None).create_page("T", [])
+    assert info.value.ambiguous and len(wire.calls) == 1

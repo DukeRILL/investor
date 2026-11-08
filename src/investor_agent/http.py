@@ -35,7 +35,8 @@ def is_public_url(url: str) -> bool:
 
 class Http(Protocol):
     def request(self, method: str, url: str, *, json_body: Any = None, params: dict | None = None,
-                headers: dict | None = None, timeout: float = 60, retry: bool = True) -> Any: ...
+                headers: dict | None = None, timeout: float = 60, retry: bool = True,
+                retries: int | None = None) -> Any: ...
 
     def get_bytes(self, url: str, max_bytes: int = 6_000_000, timeout: float = 30) -> tuple[bytes, str]: ...
 
@@ -54,15 +55,17 @@ class HttpxClient:
         self._client = httpx.Client(follow_redirects=True, headers={"User-Agent": "investor-agent/1.0"})
         self.retries = retries
 
-    def request(self, method, url, *, json_body=None, params=None, headers=None, timeout=60, retry=True):
+    def request(self, method, url, *, json_body=None, params=None, headers=None, timeout=60, retry=True,
+                retries=None):
         """retry=False for calls that are not idempotent (sendMessage, createPage, ...): 408/5xx may mean the request
         WAS executed, so it is never repeated here - the caller gets the HttpError and decides. 429 is a refusal
         before execution and is still retried."""
         delay = 2.0
-        for attempt in range(self.retries + 1):
+        limit = self.retries if retries is None else retries  # retries=0: every call is exactly one wire request
+        for attempt in range(limit + 1):
             response = self._client.request(method, url, json=json_body, params=params, headers=headers, timeout=timeout)
             if response.status_code in (408, 429) or response.status_code >= 500:
-                if attempt < self.retries and (retry or response.status_code == 429):
+                if attempt < limit and (retry or response.status_code == 429):
                     time.sleep(delay)
                     delay *= 2
                     continue

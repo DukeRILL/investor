@@ -105,7 +105,8 @@ def collect_tgstat(app, now: datetime | None = None) -> str:
     gdb.provider_count_call("tgstat", month_key(now))
     try:
         data = app.http.request("GET", TGSTAT_URL, params={"token": s.tgstat_api_token,
-                                                           "channelId": s.tgstat_channel_id or s.telegram_chat_id})
+                                                           "channelId": s.tgstat_channel_id or s.telegram_chat_id},
+                               retry=False, retries=0)  # one wire request = one counted call, no hidden repeats
     except HttpError as exc:
         pause = now + timedelta(hours=24)
         if exc.status in (401, 402, 403, 429):

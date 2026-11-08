@@ -1,5 +1,6 @@
 """Unicorn School: prepare a report at night (off-peak, 04:30), publish at 10:00 Beijing, then the topic poll."""
 
+import hashlib
 import json
 import logging
 import re
@@ -543,9 +544,12 @@ def create_pages(telegraph, title: str, nodes: list, progress=None) -> str:
     pages = paginate(nodes)
     get, put = progress or (lambda: {}, lambda st: None)
     st = get() or {}
-    if st.get("n") not in (None, len(pages)):
+    sig = [{"title": title if i == 0 else f"{_first_heading(p, 'Продолжение')} · {title}",
+            "hash": hashlib.sha256(json.dumps(p, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]}
+           for i, p in enumerate(pages)]
+    if st and (st.get("sig") != sig or st.get("n") != len(pages)):  # any difference: never createPage blindly
         raise RuntimeError("страницы статьи после сбоя разбиты иначе, чем до него: нужна ручная сверка в Telegraph")
-    st["n"] = len(pages)
+    st["n"], st["sig"] = len(pages), sig
     urls = st.setdefault("urls", {})
     next_url, next_name = None, ""
     for index in range(len(pages) - 1, -1, -1):
@@ -647,6 +651,7 @@ def publish(app: App, today: str | None = None) -> str:
                                (lambda: json.loads(app.store.get(pkey) or "{}"),
                                 lambda st: app.store.set(pkey, json.dumps(st))))
         app.store.draft_mark(today, "ready", page_url=url)
+        app.store.set(f"unicorn_pages:{today}", "")
         growth_publish.page_created(app, today, report, url)  # share block; never raises
         if state.startswith("sent:"):
             mid = int(state.split(":", 1)[1])  # the post is already in the channel: only finish
@@ -697,6 +702,7 @@ def _complete(app: App, today: str, report: dict, payload: dict, url: str, mid: 
     _grow_glossary(app, report)  # after the poll: the issue post and the poll keep their places in the channel
     app.store.draft_mark(today, "published", page_url=url, message_ids=[mid])
     app.store.set(_state_key(today), "")
+    app.store.set(f"unicorn_pages:{today}", "")
     return "published"
 
 
@@ -714,3 +720,29 @@ def reconcile(app: App, today: str, message_id: int | None = None, not_sent: boo
         return "cleared"
     app.store.set(_state_key(today), f"sent:{int(message_id)}")
     return publish(app, today)
+
+
+def unresolved_states(app: App) -> dict:
+    """Every state that makes a rollback or a restart unsafe: publication, Telegraph pages, poll, glossary."""
+    out: dict = {"publish": {}, "pages": {}, "poll": {}, "glossary": None}
+    with app.store._conn() as c:
+        rows = [(r["key"], r["value"]) for r in c.execute(
+            "SELECT key, value FROM kv WHERE key LIKE 'unicorn_publish_state:%' OR key LIKE 'unicorn_pages:%' "
+            "OR key LIKE 'unicorn_poll_intent:%'")]
+    for key, value in rows:
+        name, _, day = key.partition(":")
+        if name.endswith(":options") or day.endswith(":options") or day.endswith(":told") or not value:
+            continue
+        if name == "unicorn_publish_state":
+            out["publish"][day] = value
+        elif name == "unicorn_pages":
+            out["pages"][day] = "unfinished"
+        elif name == "unicorn_poll_intent" and value == "sending":
+            out["poll"][day] = value
+    try:
+        gstate = json.loads(app.store.get(glossary.STATE_KEY, "{}"))
+    except ValueError:
+        gstate = {}
+    if gstate.get("sending") is not None:
+        out["glossary"] = "sending"
+    return out

@@ -20,6 +20,11 @@ class TelegramError(RuntimeError):
         self.ambiguous = ambiguous
 
 
+def _is_transport(exc: Exception) -> bool:
+    """Connection lost / timeout / TLS: the request may or may not have reached the server."""
+    return isinstance(exc, (OSError, TimeoutError)) or type(exc).__module__.startswith("httpx")
+
+
 def _message_id(result: dict, method: str) -> int:
     """A positive id or an ambiguous error: the call answered ok but without a usable id (delivery unknown)."""
     try:
@@ -45,7 +50,7 @@ class TelegramClient:
         except HttpError as exc:  # strip URL with token from the message
             raise TelegramError(f"{method} failed: HTTP {exc.status}", ambiguous=exc.status >= 500 or exc.status == 408) from None
         except Exception as exc:  # noqa: BLE001
-            if isinstance(exc, (OSError, TimeoutError)) or type(exc).__module__.startswith("httpx"):
+            if _is_transport(exc):
                 raise TelegramError(f"{method} failed: {type(exc).__name__}", ambiguous=True) from None
             raise
         if not isinstance(data, dict) or not data.get("ok"):
@@ -159,6 +164,10 @@ class TelegraphClient:
         except HttpError as exc:
             raise TelegramError(f"telegraph {method} failed: HTTP {exc.status}",
                                 ambiguous=exc.status >= 500 or exc.status == 408) from None
+        except Exception as exc:  # noqa: BLE001
+            if _is_transport(exc):
+                raise TelegramError(f"telegraph {method} failed: {type(exc).__name__}", ambiguous=True) from None
+            raise
         if not isinstance(data, dict) or not data.get("ok"):
             raise TelegramError(f"telegraph {method} failed: {data.get('error') if isinstance(data, dict) else data}")
         return data["result"]
