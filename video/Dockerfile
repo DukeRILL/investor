@@ -5,7 +5,7 @@ WORKDIR /app
 COPY video/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 ADD https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx /app/models/
-COPY video/app.py video/render.py video/catalog.py video/planner.py ./
+COPY video/app.py video/render.py video/catalog.py video/planner.py video/stock.py ./
 COPY prompts/video_scenarios.md /app/prompts/video_scenarios.md
 ENV DATA_DIR=/data
 EXPOSE 8020

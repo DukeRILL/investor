@@ -347,3 +347,25 @@ def test_assemble_follows_owner_rules():
     assert P.library_shot_problems(shots, lib) == []
     assert "gen5" not in [s["image_id"] for s in shots]  # уже в двух других роликах
     assert shots[-1]["image_id"] == "img01" and [s["image_id"] for s in shots].count("img01") == 1
+
+
+# --- бесплатные стоковые фото ---
+import stock  # noqa: E402
+
+
+def test_stock_search_skips_services_without_keys(monkeypatch):
+    monkeypatch.delenv("PEXELS_API_KEY", raising=False)
+    monkeypatch.delenv("PIXABAY_API_KEY", raising=False)
+    assert stock.search("sneaker") == []
+
+
+def test_stock_pick_rejects_people_and_wide_and_takes_first_good(tmp_path, monkeypatch):
+    monkeypatch.setattr(stock, "search", lambda q, http=None: [
+        {"source": "pexels", "id": "p1", "url": "u1", "page": "x", "author": "a", "width": 3000, "height": 2000, "query": q},
+        {"source": "pexels", "id": "p2", "url": "u2", "page": "x", "author": "a", "width": 1200, "height": 1800, "query": q},
+        {"source": "pixabay", "id": "p3", "url": "u3", "page": "x", "author": "a", "width": 1200, "height": 1800, "query": q}])
+    raws = {"u1": png(2000, 1200), "u2": png(1200, 1800), "u3": png(1100, 1700)}
+    seq = iter([[[1, 1, 50, 50]], []])  # на p2 лицо, на p3 нет
+    got = stock.pick("q", tmp_path, lambda img: next(seq), set(), fetch=lambda u: raws[u])
+    assert got["id"] == "p3" and (tmp_path / "p3.jpg").exists() and dict(got["rejected_before"])["p2"] == "на фото люди"
+    assert "Pixabay" in got["license"]
