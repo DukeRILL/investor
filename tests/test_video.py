@@ -299,3 +299,21 @@ def test_voice_text_rejects_what_azure_reads_badly(text, bad):
 
 def test_voice_text_accepts_plain_words():
     assert P.voice_problems("Стивен Шварц и Кэмерон Зуб познакомились в тринадцать лет — в группе реселлеров.") == []
+
+
+def test_negated_people_is_not_people():
+    assert P.safe_image_prompt("An old forum page, no people, no faces, no text")
+    assert not P.safe_image_prompt("A founder at a desk, no text")
+
+
+def test_shot_rules_from_owner_review():
+    cat = {"img02": {}, "img04": {}}
+    good = [{"start": 0, "end": 3, "image_id": "img02", "source_type": "original"},
+            {"start": 3, "end": 6.5, "image_id": None, "source_type": "generated", "image_prompt": "an old forum page with scam warnings"},
+            {"start": 6.5, "end": 9, "image_id": "img04", "source_type": "original"}]
+    assert P.shot_problems(good, cat) == []
+    bad = [{"start": 0, "end": 5, "image_id": None, "source_type": "generated", "image_prompt": "a mountain of gold coins"},
+           {"start": 5, "end": 7, "image_id": "img02", "source_type": "original"},
+           {"start": 7, "end": 9, "image_id": "img02", "source_type": "original"}]
+    errs = " ".join(P.shot_problems(bad, cat))
+    assert "первый кадр" in errs and "дольше 4" in errs and "штамп" in errs and "подряд" in errs

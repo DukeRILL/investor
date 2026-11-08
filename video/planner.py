@@ -79,8 +79,12 @@ def validate_scenario(sc: dict, article: str, catalog_ids: set[str]) -> list[str
     return errs
 
 
+NEGATED_RE = re.compile(r"\b(no|without|empty of)\s+(people|person|faces?|humans?|hands|text|letters|logos?)\b", re.I)
+
+
 def safe_image_prompt(p: str | None) -> bool:
-    return bool(p and p.strip()) and not PEOPLE_RE.search(p)
+    """Без людей. Запреты вида «no people, no faces» людьми не считаются."""
+    return bool(p and p.strip()) and not PEOPLE_RE.search(NEGATED_RE.sub(" ", p))
 
 
 def best_original(catalog: list[dict], used: dict[str, int], kind_hint: str | None = None) -> dict:
@@ -147,3 +151,29 @@ def voice_problems(text: str) -> list[str]:
             sample = [f if isinstance(f, str) else "".join(f) for f in found][:3]
             out.append(f"{what}: {', '.join(sorted(set(sample)))}")
     return out
+
+
+# ---------- план кадров: правила ревью владельца ----------
+CLICHE_RE = re.compile(r"\bcoins?\b|money rain|rocket|light ?bulb|puzzle|handshake|success arrow|\bgold\b", re.I)
+MAX_SHOT = 4.05
+
+
+def shot_problems(shots: list[dict], catalog: dict[str, dict]) -> list[str]:
+    """Нарушения правил кадров. Пустой список: план можно отдавать в генерацию и монтаж."""
+    errs = []
+    if shots and shots[0].get("source_type") != "original":
+        errs.append("первый кадр должен быть реальным фото")
+    for i, s in enumerate(shots):
+        if s["end"] - s["start"] > MAX_SHOT:
+            errs.append(f"кадр {i + 1}: дольше 4 секунд")
+        if i and s.get("image_id") and s.get("image_id") == shots[i - 1].get("image_id") and s.get("focus") == shots[i - 1].get("focus"):
+            errs.append(f"кадр {i + 1}: тот же кадр подряд")
+        if s.get("source_type") == "generated":
+            p = s.get("image_prompt") or ""
+            if not safe_image_prompt(p):
+                errs.append(f"кадр {i + 1}: в промте люди или пусто")
+            if CLICHE_RE.search(p):
+                errs.append(f"кадр {i + 1}: штамп в промте ({CLICHE_RE.search(p).group(0)})")
+        elif s.get("image_id") not in catalog:
+            errs.append(f"кадр {i + 1}: нет изображения {s.get('image_id')}")
+    return errs
