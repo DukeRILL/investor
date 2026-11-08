@@ -136,6 +136,36 @@ async def put_image(request):
     return JSONResponse({"ok": True})
 
 
+def stock_one(job: str, s: int, image_id: str, prompt: str) -> dict:
+    """Приоритет 2: готовое фото Pixabay вместо FLUX. Нашлось -> сохранено как кадр сцены; нет -> found=false, дальше FLUX."""
+    import stock
+    from PIL import Image
+    q = stock.query_from_prompt(prompt)
+    if not q or not (os.environ.get("PIXABAY_API_KEY") or os.environ.get("PEXELS_API_KEY")):
+        return {"found": False, "why": "нет запроса или ключа"}
+    jd = job_dir(job)
+    got = stock.pick(q, DATA / "stock", C.detect_faces, set())
+    if not got:
+        return {"found": False, "query": q}
+    gdir = jd / "generated" / f"s{s}"
+    gdir.mkdir(parents=True, exist_ok=True)
+    Image.open(got["file"]).save(gdir / f"{image_id}.png")
+    meta = {k: got[k] for k in ("source", "id", "page", "author", "width", "height", "query", "license")}
+    (gdir / f"{image_id}.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return {"found": True, **meta}
+
+
+async def put_stock(request):
+    b = await request.json()
+    image_id = request.path_params["image_id"]
+    if not re.fullmatch(r"gen\d\d", image_id):
+        return JSONResponse({"error": "image_id"}, 400)
+    try:
+        return JSONResponse(await run_in_threadpool(stock_one, request.path_params["job"], int(request.path_params["s"]), image_id, str(b.get("prompt", ""))))
+    except ValueError:
+        return JSONResponse({"error": "job"}, 400)
+
+
 def render_one(job: str, s: int) -> dict:
     jd = job_dir(job)
     meta = json.loads((jd / "scenarios.json").read_text(encoding="utf-8"))
@@ -151,6 +181,8 @@ def render_one(job: str, s: int) -> dict:
         from PIL import Image
         w, h = Image.open(g).size
         images[g.stem] = {"id": g.stem, "file": str(g), "width": w, "height": h, "faces": [], "kind": "generated"}
+        if g.with_suffix(".json").exists():  # стоковое фото: источник и лицензия идут в манифест
+            images[g.stem]["stock"] = json.loads(g.with_suffix(".json").read_text(encoding="utf-8"))
     missing = [x["image_id"] for x in scenes if x["image_id"] not in images]
     if missing:
         raise ValueError(f"нет изображений: {missing}")
@@ -160,6 +192,7 @@ def render_one(job: str, s: int) -> dict:
         info = R.render(scenes, audio, images, out)
         info["sync"] = R.verify_sync(out, info)
     info["hypothesis"] = sc["hypothesis"]
+    info["stock"] = {k: v["stock"] for k, v in images.items() if v.get("stock") and any(x["image_id"] == k for x in scenes)}
     info["counts"] = {"original": sum(x["source_type"] == "original" for x in scenes), "generated": sum(x["source_type"] == "generated" for x in scenes)}
     out.with_suffix(".json").write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
     return {k: v for k, v in info.items() if k != "scenes"} | {"file": f"/out/{out.name}", "path": str(out)}
@@ -185,4 +218,5 @@ app = Starlette(routes=[
     Route("/health", health), Route("/scenarios", scenarios, methods=["POST"]),
     Route("/jobs/{job}/{s:int}/audio/{n:int}", put_audio, methods=["PUT"]),
     Route("/jobs/{job}/{s:int}/image/{image_id}", put_image, methods=["PUT"]),
+    Route("/jobs/{job}/{s:int}/stock/{image_id}", put_stock, methods=["POST"]),
     Route("/render", do_render, methods=["POST"]), Route("/out/{name}", get_out)])

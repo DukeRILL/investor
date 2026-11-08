@@ -363,9 +363,72 @@ def test_stock_pick_rejects_people_and_wide_and_takes_first_good(tmp_path, monke
     monkeypatch.setattr(stock, "search", lambda q, http=None: [
         {"source": "pexels", "id": "p1", "url": "u1", "page": "x", "author": "a", "width": 3000, "height": 2000, "query": q},
         {"source": "pexels", "id": "p2", "url": "u2", "page": "x", "author": "a", "width": 1200, "height": 1800, "query": q},
-        {"source": "pixabay", "id": "p3", "url": "u3", "page": "x", "author": "a", "width": 1200, "height": 1800, "query": q}])
+        {"source": "pixabay", "id": "p3", "tags": "q", "url": "u3", "page": "x", "author": "a", "width": 1200, "height": 1800, "query": q}])
     raws = {"u1": png(2000, 1200), "u2": png(1200, 1800), "u3": png(1100, 1700)}
     seq = iter([[[1, 1, 50, 50]], []])  # на p2 лицо, на p3 нет
     got = stock.pick("q", tmp_path, lambda img: next(seq), set(), fetch=lambda u: raws[u])
     assert got["id"] == "p3" and (tmp_path / "p3.jpg").exists() and dict(got["rejected_before"])["p2"] == "на фото люди"
     assert "Pixabay" in got["license"]
+
+
+# --- Pixabay: кеш, 429/5xx, запрос, отказ API ---
+class _R:
+    def __init__(self, code, data=None, headers=None):
+        self.status_code, self._d, self.headers = code, data or {}, headers or {}
+
+    def json(self):
+        return self._d
+
+
+class _H:
+    def __init__(self, *rs):
+        self.rs, self.calls = list(rs), 0
+
+    def get(self, url, **kw):
+        self.calls += 1
+        r = self.rs.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def test_stock_query_is_from_scene_prompt_and_differs(monkeypatch):
+    a = stock.query_from_prompt("Abstract editorial illustration, no people. A cargo ship at a port with containers")
+    b = stock.query_from_prompt("Laptop with spreadsheet on a wooden desk")
+    assert a == "cargo ship port containers" and b != a
+
+
+def test_stock_get_json_retries_429_5xx_then_caches(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    waits = []
+    h = _H(_R(429, headers={"Retry-After": "3"}), _R(503), _R(200, {"hits": [1]}))
+    assert stock.get_json(h, "u", params={"key": "SECRET", "q": "x"}, name="pixabay", sleep=waits.append) == {"hits": [1]}
+    assert h.calls == 3 and waits[0] == 3
+    assert stock.get_json(_H(), "u", params={"key": "SECRET", "q": "x"}, name="pixabay") == {"hits": [1]}  # из кеша, без запроса
+    assert "SECRET" not in "".join(p.read_text() for p in (tmp_path / "cache" / "stock").iterdir())
+
+
+def test_stock_get_json_unavailable_returns_none(tmp_path, monkeypatch):
+    import httpx as hx
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    h = _H(hx.ConnectTimeout("t"), _R(500), _R(502))
+    assert stock.get_json(h, "u", params={"q": "y"}, name="pixabay", sleep=lambda s: None) is None
+    assert stock.get_json(_H(_R(400)), "u", params={"q": "z"}, name="pixabay") is None
+
+
+def test_stock_pick_rejects_people_tags_irrelevant_and_empty(tmp_path, monkeypatch):
+    base = {"source": "pixabay", "url": "u", "page": "x", "author": "a", "width": 1200, "height": 1800}
+    monkeypatch.setattr(stock, "search", lambda q, http=None: [
+        {**base, "id": "a", "tags": "cat, animal"}, {**base, "id": "b", "tags": "ship, people"},
+        {**base, "id": "c", "tags": "ship, harbor"}])
+    got = stock.pick("cargo ship", tmp_path, lambda i: [], set(), fetch=lambda u: png(1200, 1800))
+    assert got["id"] == "c" and got["author"] == "a"
+    monkeypatch.setattr(stock, "search", lambda q, http=None: [])
+    assert stock.pick("q", tmp_path, lambda i: [], set(), fetch=lambda u: b"") is None
+
+
+def test_stock_pick_does_not_redownload_saved(tmp_path, monkeypatch):
+    (tmp_path / "pixabay-1.jpg").write_bytes(b"x")
+    monkeypatch.setattr(stock, "search", lambda q, http=None: [{"source": "pixabay", "id": "pixabay-1", "url": "u", "page": "x",
+                         "author": "a", "tags": "ship", "width": 1200, "height": 1800}])
+    assert stock.pick("ship", tmp_path, lambda i: [], set(), fetch=lambda u: 1 / 0) is None
