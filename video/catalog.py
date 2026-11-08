@@ -9,7 +9,7 @@ from PIL import Image
 FACE_MODEL = os.environ.get("FACE_MODEL", "/app/models/face_detection_yunet_2023mar.onnx")
 MIN_SIDE = 400  # меньше этого снимок не растянуть до 1080x1920 без мусора
 FOUNDER_RE = re.compile(r"основател|сооснователь|founder|\bceo\b|гендиректор", re.I)
-CHART_RE = re.compile(r"график|диаграмм|по раундам|динамик", re.I)
+CHART_RE = re.compile(r"график|диаграмм|по раундам|динамик|темп выручки|\((млн|млрд) \$\)", re.I)
 PRODUCT_RE = re.compile(r"слайд|продукт|интерфейс|платформ|скриншот|приложени|картинка со страницы", re.I)
 OFFICE_RE = re.compile(r"\bофис", re.I)
 NAME_RE = re.compile(r"[А-ЯЁ][а-яё]+ [А-ЯЁ][а-яё]+")

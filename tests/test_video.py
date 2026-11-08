@@ -285,3 +285,17 @@ def test_chart_and_text_images_are_never_cropped():
 def test_two_people_fit_or_sweep():
     assert R.plan_motion(TWO, "zoom_in")["layout"] == "contain"
     assert R.plan_motion(TWO, "face_sweep")["effect"] == "face_sweep"
+
+
+@pytest.mark.parametrize("text,bad", [
+    ("Рынок ITSM стоит тринадцать миллиардов", "латиница"),
+    ("Оценка — $3 млрд", "цифры"),
+    ("Её закрывает ИИ", "сокращения"),
+    ("семьдесят-восемьдесят процентов, то есть 70%", "символы"),
+])
+def test_voice_text_rejects_what_azure_reads_badly(text, bad):
+    assert any(p.startswith(bad) for p in P.voice_problems(text))
+
+
+def test_voice_text_accepts_plain_words():
+    assert P.voice_problems("Стивен Шварц и Кэмерон Зуб познакомились в тринадцать лет — в группе реселлеров.") == []

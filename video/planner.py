@@ -127,3 +127,23 @@ def finalize_cta(sc: dict) -> None:
     """Финал дословно как просил владелец, модель его не переписывает."""
     last = sc["scenes"][-1]
     last.update(voice=CTA_VOICE, on_screen=CTA_SCREEN, big_number=None, is_cta=True)
+
+
+# ---------- текст для голоса Azure: только целые русские слова ----------
+VOICE_BAD = [
+    (re.compile(r"\d"), "цифры"),
+    (re.compile(r"[A-Za-z]"), "латиница"),
+    (re.compile(r"[$%€₽&@#/+=*<>«»\"()\[\]]"), "символы"),
+    (re.compile(r"\b(ИИ|ПО|ИТ|США|млн|млрд|тыс|руб|долл)\b|\b[А-ЯЁ]{2,}\b"), "сокращения"),
+]
+
+
+def voice_problems(text: str) -> list[str]:
+    """Что помешает голосу прочитать текст правильно. Пустой список: текст годен для Azure."""
+    out = []
+    for rx, what in VOICE_BAD:
+        found = rx.findall(text)
+        if found:
+            sample = [f if isinstance(f, str) else "".join(f) for f in found][:3]
+            out.append(f"{what}: {', '.join(sorted(set(sample)))}")
+    return out
