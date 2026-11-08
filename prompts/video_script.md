@@ -42,6 +42,15 @@ You may add at most one extra sentence between template sentences when a concret
 ## Style
 Conversational, energetic Russian; one person telling a friend something surprising. Short sentences, each scene sentence 6–14 words. A story, not an advertisement: no praise of the product, no «уникальный», «революционный», «лидер рынка». The viewer should want to know where to read the whole story. No investment advice.
 
+## Quality rules (learned from the owner's review; breaking any of them makes the script unusable)
+- No claim without a passport fact. Template phrases that assert something specific (for example «вместо конкуренции по цене», «конкуренты годами не замечали», «теряют деньги») stay only if a fact supports them; otherwise replace the claim with a supported one, not just reword it.
+- No meta phrases about the viewer's thoughts or the video itself («возможно, ты подумал так же», «давай разберёмся»), and no service labels on screen («сомнение зрителя», «решение», «хук»). A doubt is phrased as a lively question: «Звучит странно? А вот продавцы так не думали.»
+- No exaggeration of numbers: «десяток сервисов» stays «десяток», never «десять ради одного».
+- Every pronoun has a clear noun in the same or previous sentence; when in doubt repeat the noun («эту проблему», not «её»).
+- One idea per sentence, 6–14 words. Split lists: «Сделали Уоп. Но главное — продавец получает не витрину, а готовый бизнес.»
+- The hook (T1) must be the strongest supported fact for its template: money, deception, scale or a paradox. If the template's money claim is not supported, use the most painful supported fact (fraud, intermediaries, lost time).
+- "on_screen" writes the brand in its original spelling (Whop), "voice" in pronunciation (Уоп).
+
 ## Facts
 Use only the passport. Every sentence that states a fact has "fact_id": the id of the passport fact it uses. Do not invent numbers, ages, biographies, rejections, sales or investments.
 
