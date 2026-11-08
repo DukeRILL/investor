@@ -10,6 +10,7 @@ from .links import db, destination, target_allowed
 
 BOT_UA = re.compile(r"bot|crawl|spider|preview|facebookexternalhit|whatsapp|curl|wget|python|httpx|slack|vkshare",
                     re.I)
+DAILY_EVENT_CAP = 2000  # click rows per link per day
 CODE_RE = re.compile(r"^[A-Za-z0-9_-]{4,16}$")
 
 
@@ -26,6 +27,8 @@ def resolve_click(app, code: str, user_agent: str, ip: str, salt: str) -> str | 
         return None
     now = datetime.now(timezone.utc)
     kind = "bot_click" if BOT_UA.search(user_agent or "") or not user_agent else "click"
-    visitor = hashlib.sha256(f"{salt}|{now.date()}|{ip}|{user_agent}".encode()).hexdigest()[:20]
+    visitor = hashlib.sha256(f"{salt}|{now.date()}|{ip}".encode()).hexdigest()[:20]  # not the spoofable UA
+    if gdb.traffic_today(link["id"], now.date().isoformat()) >= DAILY_EVENT_CAP:
+        return target  # redirect still works, but the table cannot be flooded
     gdb.add_traffic(link["id"], kind, f"{kind}:{link['id']}:{visitor}", now.isoformat(timespec="seconds"))
     return target

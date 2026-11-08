@@ -25,7 +25,8 @@ class Settings(BaseModel):
     cloudinary_api_key: str = ""
     cloudinary_api_secret: str = ""
     # growth statistics (docs/GROWTH.md)
-    growth_enabled: bool = True
+    growth_enabled: bool = False  # opt-in: GROWTH_ENABLED=1
+    trust_proxy: bool = False  # take the client IP for /go from X-Forwarded-For only behind your own proxy
     public_base_url: str = ""  # public HTTPS origin of this app; only then clicks go through /go/<code>
     tgstat_api_token: str = ""
     tgstat_channel_id: str = ""  # default: TELEGRAM_CHAT_ID
@@ -78,8 +79,9 @@ def load_settings(env_file: Path | str = ".env") -> Settings:
             merged[new] = merged[old]
     fields = Settings.model_fields
     data = {name: merged[name.upper()] for name in fields if name.upper() in merged and merged[name.upper()] != ""}
-    if "growth_enabled" in data:
-        data["growth_enabled"] = str(data["growth_enabled"]).lower() in {"1", "true", "yes"}
+    for flag in ("growth_enabled", "trust_proxy"):
+        if flag in data:
+            data[flag] = str(data[flag]).lower() in {"1", "true", "yes"}
     if "scheduler_enabled" in data:
         data["scheduler_enabled"] = str(data["scheduler_enabled"]).lower() in {"1", "true", "yes"}
     return Settings(**data)

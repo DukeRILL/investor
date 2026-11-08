@@ -17,6 +17,10 @@ TGSTAT_METRICS = ("participants_count", "avg_post_reach", "adv_post_reach_24h", 
                   "er_percent", "daily_reach", "forwards_count", "mentions_count")
 
 
+def month_key(now: datetime) -> str:
+    return to_bj(now).strftime("%Y-%m")  # quota month = Beijing month, like every schedule in the project
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -68,7 +72,7 @@ def tgstat_state(app, now: datetime | None = None) -> str:
     p = gdb.provider("tgstat")
     if p["disabled_until"] and now.isoformat() < p["disabled_until"]:
         return "paused"
-    month = now.strftime("%Y-%m")
+    month = month_key(now)
     if gdb.provider_calls("tgstat", month) >= s.tgstat_monthly_limit - s.tgstat_reserve:
         return "quota_guard"
     last = gdb.snapshot_latest(0, "telegram", "participants_count", "tgstat")
@@ -84,7 +88,7 @@ def collect_tgstat(app, now: datetime | None = None) -> str:
     state = tgstat_state(app, now)
     if state != "ok":
         return state
-    gdb.provider_count_call("tgstat", now.strftime("%Y-%m"))
+    gdb.provider_count_call("tgstat", month_key(now))
     try:
         data = app.http.request("GET", TGSTAT_URL, params={"token": s.tgstat_api_token,
                                                            "channelId": s.tgstat_channel_id or s.telegram_chat_id})
@@ -151,6 +155,16 @@ def poll_updates(app, batches: int = 5) -> dict:
             updates = app.telegram.get_updates(int(raw) if raw else None, ["chat_member"])
         except Exception as exc:  # noqa: BLE001
             out["error"] = f"{type(exc).__name__}: {exc}"[:200]
+            try:
+                if app.telegram.webhook_url():
+                    out["error"] = "webhook is set: chat_member polling is impossible until it is removed (not touched)"
+                    flag = f"growth_webhook_alert:{to_bj(_now()).date()}"
+                    if not app.store.get(flag):
+                        app.store.set(flag, "1")
+                        app.notify_admin("Статистика подписок: у бота настроен webhook, getUpdates не работает. "
+                                         "Вступления не собираются. Webhook не трогаю: решите, нужен ли он.")
+            except Exception:  # noqa: BLE001
+                pass
             db(app).provider_error("telegram_updates", out["error"])
             return out
         if not updates:

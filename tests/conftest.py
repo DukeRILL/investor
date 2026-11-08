@@ -51,6 +51,9 @@ class FakeTelegram:
     def member_count(self, chat_id):
         return getattr(self, "members", 100)
 
+    def webhook_url(self):
+        return getattr(self, "webhook", "")
+
     def get_updates(self, offset, allowed, limit=100):
         self.updates_calls = getattr(self, "updates_calls", []) + [(offset, allowed)]
         queue = [u for u in getattr(self, "updates", []) if offset is None or u["update_id"] >= offset]
@@ -131,7 +134,7 @@ class FakeDeepSeek:
 def make_app(tmp_path):
     def _make(deepseek=None, telegram=None, mode="auto", admin="111", http=None, images=None):
         settings = Settings(database_path=tmp_path / "db.sqlite3", publish_mode=mode, telegram_admin_chat_id=admin,
-                            deepseek_api_key="k", telegram_bot_token="t")
+                            deepseek_api_key="k", telegram_bot_token="t", growth_enabled=True)
         return App(settings=settings, http=http, store=Store(settings.database_path),
                    deepseek=deepseek or FakeDeepSeek([]), telegram=telegram or FakeTelegram(),
                    telegraph=FakeTelegraph(), images=images)

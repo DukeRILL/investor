@@ -90,7 +90,7 @@ def build_report(app, now: datetime | None = None) -> str:
     L.append("; ".join(parts) or "данных нет")
     note = {"not_configured": "токен не задан", "expired": "бесплатный доступ закончился", "paused": "опрос приостановлен после ошибки/лимита",
             "quota_guard": "месячный лимит запросов почти исчерпан, опрос остановлен"}.get(st)
-    calls = gdb.provider_calls("tgstat", now.strftime("%Y-%m"))
+    calls = gdb.provider_calls("tgstat", collect.month_key(now))
     L.append(f"Запросов в этом месяце: {calls}/{app.settings.tgstat_monthly_limit}" + (f" · {note}" if note else ""))
     for name, label in (("telegraph", "Telegraph"), ("telegram_bot", "Telegram Bot API"), ("tgstat", "TGStat"),
                         ("telegram_updates", "chat_member")):

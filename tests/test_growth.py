@@ -329,3 +329,54 @@ def test_growth_disabled_changes_nothing(make_app):
     unicorn.prepare(app, DAY)
     assert unicorn.publish(app, DAY) == "published"
     assert "Подписаться" not in flat(app.telegraph.pages[0][1]) and not getattr(app.telegram, "buttons", {})
+
+
+# --- review fixes ---------------------------------------------------------------------------------------------
+def test_growth_is_off_by_default():
+    from investor_agent.config import Settings
+    assert Settings().growth_enabled is False and Settings().trust_proxy is False
+
+
+def test_click_flood_is_capped_and_spoofed_ua_does_not_multiply(make_app, monkeypatch):
+    app = published_app(make_app)
+    link = db(app).links()[0]
+    for i in range(5):
+        redirect.resolve_click(app, link["code"], f"Mozilla/{i}", "1.1.1.1", "s")
+    assert db(app).traffic_counts() == {("telegraph", "click"): 1}
+    monkeypatch.setattr(redirect, "DAILY_EVENT_CAP", 3)
+    for i in range(10):
+        assert redirect.resolve_click(app, link["code"], "Mozilla", f"2.2.2.{i}", "s")
+    assert db(app).traffic_counts()[("telegraph", "click")] == 3
+
+
+def test_webhook_conflict_is_reported_not_removed(make_app):
+    app = make_app()
+    app.telegram.webhook = "https://example.com/hook"
+    app.telegram.get_updates = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("409 Conflict"))
+    assert "webhook is set" in collect.poll_updates(app)["error"]
+    collect.poll_updates(app)
+    alerts = [m for m in app.telegram.sent if "webhook" in m["html"]]
+    assert len(alerts) == 1 and app.telegram.webhook  # one alert per day, webhook untouched
+
+
+import pytest
+
+
+@pytest.mark.parametrize("status,until", [(401, "2026-11-12"), (403, "2026-11-12"), (402, "2026-12-01"), (429, "2026-12-01")])
+def test_tgstat_http_errors_pause(make_app, status, until):
+    app = tgstat_app(make_app, HttpError(status, "x"))
+    assert collect.collect_tgstat(app, datetime(2026, 11, 9, 1, tzinfo=timezone.utc)) == "error"
+    assert db(app).provider("tgstat")["disabled_until"].startswith(until)
+
+
+def test_tgstat_200_with_error_body_pauses_a_day(make_app):
+    app = tgstat_app(make_app, {"status": "error", "error": "limit exceeded"})
+    assert collect.collect_tgstat(app, datetime(2026, 11, 9, 1, tzinfo=timezone.utc)) == "error"
+    assert collect.collect_tgstat(app, datetime(2026, 11, 9, 5, tzinfo=timezone.utc)) == "paused"
+
+
+def test_tgstat_quota_month_is_beijing_month(make_app):
+    app = tgstat_app(make_app, OK)
+    late = datetime(2026, 11, 30, 17, tzinfo=timezone.utc)  # 01:00 on 1 December in Beijing
+    collect.collect_tgstat(app, late)
+    assert db(app).provider_calls("tgstat", "2026-12") == 1 and db(app).provider_calls("tgstat", "2026-11") == 0

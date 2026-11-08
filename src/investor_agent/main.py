@@ -56,7 +56,7 @@ async def go(request):
 
     app_ = state.get("app")
     client = request.client.host if request.client else ""
-    ip = request.headers.get("x-forwarded-for", client).split(",")[0].strip()
+    ip = (request.headers.get("x-forwarded-for", client).split(",")[0].strip() if settings.trust_proxy else client)
     target = resolve_click(app_, request.path_params["code"], request.headers.get("user-agent", ""), ip,
                            settings.telegram_bot_token[-8:] or "salt") if app_ else None
     if not target:

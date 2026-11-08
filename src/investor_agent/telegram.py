@@ -89,6 +89,9 @@ class TelegramClient:
     def member_count(self, chat_id: str) -> int:
         return int(self._call("getChatMemberCount", {"chat_id": chat_id}))
 
+    def webhook_url(self) -> str:
+        return (self._call("getWebhookInfo", {}) or {}).get("url", "")
+
     def get_updates(self, offset: int | None, allowed: list[str], limit: int = 100) -> list[dict]:
         payload = {"timeout": 0, "limit": limit, "allowed_updates": allowed}
         if offset is not None:

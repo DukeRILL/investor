@@ -167,6 +167,11 @@ class GrowthDb:
         with self.store._conn() as c:
             return {(r["source"], r["event_type"]): r["n"] for r in c.execute(sql + " GROUP BY 1, 2", args)}
 
+    def traffic_today(self, link_id: int, day: str) -> int:
+        with self.store._conn() as c:
+            return c.execute("SELECT COUNT(*) n FROM traffic_events WHERE tracking_link_id=? AND occurred_at >= ?",
+                             (link_id, day)).fetchone()["n"]
+
     # snapshots ----------------------------------------------------------------------------------------------
     def snapshot_add(self, pub_id: int, source: str, metric: str, value: float, provider: str,
                      measured_at: str | None = None) -> None:
