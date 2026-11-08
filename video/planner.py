@@ -285,7 +285,8 @@ def assemble_shots(lines: list[dict], matches: dict[str, list[str]], library: di
     return shots
 
 
-BANNED_QUERY_RE = re.compile(r"toolbox|tool ?belt|wrench|screw|bolt|puzzle|rubik|jigsaw|light ?bulb|rocket|\bcoins?\b|money|gear|vault|chain|mousetrap|"
+BANNED_QUERY_RE = re.compile(r"old|vintage|retro|antique|classic|dusty|rusty|abandoned|crt|cathode|90s|80s|2000s|black and white|monochrome|floppy|typewriter|"
+                             r"toolbox|tool ?belt|wrench|screw|bolt|puzzle|rubik|jigsaw|light ?bulb|rocket|\bcoins?\b|money|gear|vault|chain|mousetrap|"
                              r"paper airplane|unicorn|robot|arrow|chart|graph|screen|monitor|laptop|keyboard|sign\b|logo|book|document|receipt", re.I)
 
 

@@ -515,3 +515,8 @@ def test_subtitles_show_brands_and_names_in_latin_but_keep_russian_companies():
     assert names.display("в Телеграм, Школа единорогов") == "в Telegram, Школа единорогов"
     ass = R.build_ass([{"start": 0.0, "end": 3.0, "words": [("Уоп", 0, 1), ("растёт", 1, 2)], "on_screen": "Уоп: Стивен Шварц"}], 3.0)
     assert "Whop" in ass and "Уоп" not in ass and "STEVEN SCHWARTZ" in ass
+
+
+def test_old_looking_queries_are_banned():
+    assert P.clean_queries(["old computer desk", "vintage sneaker", "black and white alley", "dusty office desk", "CRT television",
+                            "modern open office", "wireless headphones on table"]) == ["modern open office", "wireless headphones on table"]
