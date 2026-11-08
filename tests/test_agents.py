@@ -216,16 +216,26 @@ def test_poll_tally_counts_one_vote_and_keeps_ties():
     assert poll.tally(opts, [2, 0, 2, 1]) == ["Финтех", "После 2020"]
 
 
-def test_poll_options_from_deepseek_or_fallback(make_app):
+def test_poll_options_pool_categories_and_no_repeats_for_7_days(make_app):
+    import random
+    from datetime import date, timedelta
     from investor_agent.unicorn import poll
-    ds = FakeDeepSeek([])
-    app = make_app(deepseek=ds)
-    assert poll.make_options(app, "2026-11-10", []) == poll.fallback_options("2026-11-10")
-    ds.json_handler = lambda p: {"options": ["Финтех и платежи", "Компании из Европы", "Основаны после 2020 года",
-                                             "Маркетплейсы"]}
-    assert poll.make_options(app, "2026-11-10", []) == ["Финтех и платежи", "Компании из Европы",
-                                                        "Основаны после 2020 года", "Маркетплейсы"]
-    assert len(set(poll.fallback_options("2026-11-11"))) == 4
+    from investor_agent.unicorn.poll_topics import POOL
+    assert len(POOL) == 100 and len({t for _, t in POOL}) == 100 and all(len(t) <= poll.OPTION_MAX for _, t in POOL)
+    cat = dict((t, c) for c, t in POOL)
+    app = make_app(deepseek=FakeDeepSeek([]))
+    day, shown = date(2026, 11, 10), {}
+    for i in range(7):
+        issue = (day + timedelta(days=i)).isoformat()
+        opts = poll.make_options(app, issue, rng=random.Random(i))
+        assert len(set(opts)) == 4 and len({cat[o] for o in opts}) == 4  # four different categories
+        assert not set(opts) & set(shown)  # nothing from the last 7 days
+        poll.remember(app, issue, opts)
+        shown.update({o: issue for o in opts})
+    # after the window the first day's options are allowed again, and old entries are pruned
+    later = (day + timedelta(days=7)).isoformat()
+    poll.remember(app, later, ["x"])
+    assert all(t not in poll._history(app) for t in list(shown)[:4])
 
 
 def test_poll_posted_after_issue_and_closed_not_before_23_moscow(make_app):

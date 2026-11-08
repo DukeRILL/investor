@@ -2,17 +2,19 @@
 
 Posted right after the 10:00 issue, closed (and deleted) at 04:00 Beijing = 23:00 Moscow, 30 minutes before the
 night preparation at 04:30.
-The winning topic narrows the candidate search; with no votes the agent picks on its own. See docs/RULES.md.
+The 4 options come from a pool of 100 (poll_topics.py), no repeats within 7 days. The winning topic gives only a
+search direction, not a company; with no votes the agent picks on its own. See docs/RULES.md.
 """
 
 import json
 import logging
+import random
 from datetime import date, datetime, timedelta
 
 from ..app import App
-from ..quality import is_russian
 from ..telegram import TelegramError
 from ..storage import utcnow as utc_iso
+from .poll_topics import POOL
 from ..timeutil import BEIJING, now_bj
 
 log = logging.getLogger(__name__)
@@ -21,14 +23,8 @@ CLOSE_TIME = (4, 0)  # Beijing; = 23:00 Moscow. The owner's rule: the poll never
 QUESTION = "Какую компанию разобрать в следующем выпуске «Школы единорогов»?"
 OPTION_COUNT = 4
 OPTION_MAX = 100  # Telegram limit per poll option
-# Used when DeepSeek could not propose options; rotated by date. Broad on purpose: market, sector, year, region.
-FALLBACK_TOPICS = [
-    "Финтех и платежи", "Компании, основанные после 2020 года", "Европейский стартап", "Сервис для малого бизнеса",
-    "HR, найм и управление командой", "Логистика и доставка", "Компании из Азии или Латинской Америки",
-    "Маркетплейс", "Здоровье и медицина", "Основаны до 2015 года и до сих пор частные", "Образование",
-    "Потребительское приложение", "B2B-софт для автоматизации", "Компании из Индии", "Страхование и финуслуги",
-    "Агротех и еда",
-]
+HISTORY_KEY = "unicorn_poll_history"  # kv: {option text: ISO date it was last offered}
+REPEAT_DAYS = 7  # an option shown in the last 7 days must not be offered again
 
 
 def poll_key(issue: str) -> str:
@@ -43,33 +39,39 @@ def next_issue(issue: str) -> str:
     return (date.fromisoformat(issue) + timedelta(days=1)).isoformat()
 
 
-def fallback_options(issue: str) -> list[str]:
-    start = date.fromisoformat(issue).toordinal() * OPTION_COUNT % len(FALLBACK_TOPICS)
-    return [FALLBACK_TOPICS[(start + i) % len(FALLBACK_TOPICS)] for i in range(OPTION_COUNT)]
-
-
-def clean_options(raw) -> list[str]:
-    """Exactly four distinct Russian options of at most 100 characters, or an empty list."""
-    out: list[str] = []
-    for item in raw if isinstance(raw, list) else []:
-        text = " ".join(str(item.get("text", "") if isinstance(item, dict) else item).split()).strip(" .")
-        if text and len(text) <= OPTION_MAX and is_russian(text) and text.lower() not in {o.lower() for o in out}:
-            out.append(text)
-    return out[:OPTION_COUNT] if len(out) >= OPTION_COUNT else []
-
-
-def make_options(app: App, issue: str, recent: list[dict]) -> list[str]:
-    """Topics for the poll about issue `issue`. Called during the night preparation (off-peak); never fails."""
+def _history(app: App) -> dict[str, str]:
     try:
-        result = app.deepseek.complete_json(app.settings.deepseek_model_fast, app.prompt("unicorn_poll"), {
-            "issue_date": issue,
-            "recent": [{"industry": r.get("industry"), "country": r.get("country")} for r in recent],
-        }, temperature=0.9)
-        options = clean_options(result.get("options"))
-    except Exception as exc:  # noqa: BLE001 - the poll must go out even without DeepSeek
-        log.warning("poll options failed: %s", type(exc).__name__)
-        options = []
-    return options or fallback_options(issue)
+        return json.loads(app.store.get(HISTORY_KEY) or "{}")
+    except ValueError:
+        return {}
+
+
+def make_options(app: App, issue: str, recent: list[dict] | None = None, rng: random.Random | None = None) -> list[str]:
+    """Four random options from the pool for the poll about issue `issue`: from four different categories,
+    none offered in the last 7 days. No DeepSeek call. The choice is recorded in the history."""
+    rng = rng or random.Random()
+    day = date.fromisoformat(issue)
+    seen = {t for t, d in _history(app).items() if (day - date.fromisoformat(d)).days < REPEAT_DAYS}
+    free = [(c, t) for c, t in POOL if t not in seen]
+    if len(free) < OPTION_COUNT:  # pool exhausted by a very long streak; cannot happen with 100 topics / 7 days
+        free = list(POOL)
+    by_cat: dict[str, list[str]] = {}
+    for c, t in free:
+        by_cat.setdefault(c, []).append(t)
+    cats = rng.sample(list(by_cat), min(OPTION_COUNT, len(by_cat)))
+    options = [rng.choice(by_cat[c]) for c in cats]
+    rest = [t for _, t in free if t not in options]
+    options += rng.sample(rest, OPTION_COUNT - len(options))
+    rng.shuffle(options)
+    return options
+
+
+def remember(app: App, issue: str, options: list[str]) -> None:
+    """Record options as shown on `issue`; entries older than the repeat window are dropped."""
+    day = date.fromisoformat(issue)
+    hist = {t: d for t, d in _history(app).items() if (day - date.fromisoformat(d)).days < REPEAT_DAYS}
+    hist.update({o: issue for o in options})
+    app.store.set(HISTORY_KEY, json.dumps(hist, ensure_ascii=False))
 
 
 def tally(options: list[str], counts: list[int]) -> list[str]:
@@ -88,6 +90,7 @@ def post(app: App, issue: str, options: list[str]) -> int | None:
     except TelegramError as exc:
         app.notify_admin(f"Школа единорогов: голосование за тему на {issue} не отправлено: {exc}")
         return None
+    remember(app, issue, options)
     app.store.set(poll_key(issue), json.dumps({"chat": chat, "message_id": mid, "options": options,
                                                "posted_at": utc_iso()}, ensure_ascii=False))
     return mid

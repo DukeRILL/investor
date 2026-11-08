@@ -617,6 +617,6 @@ def publish(app: App, today: str | None = None) -> str:
                           report.get("country") or chosen.get("country", ""), today, url,
                           ai=bool(chosen.get("ai_core")))
     tomorrow = poll.next_issue(today)  # readers vote on the topic of the next issue right after this one
-    poll.post(app, tomorrow, payload.get("poll_options") or poll.fallback_options(tomorrow))
+    poll.post(app, tomorrow, payload.get("poll_options") or poll.make_options(app, tomorrow))
     _grow_glossary(app, report)  # after the poll: the issue post and the poll keep their places in the channel
     return "published"
