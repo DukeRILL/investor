@@ -324,7 +324,7 @@ def test_library_rules_unique_images_and_logo_gap():
     sh = lambda ids: [{"start": i * 3, "end": i * 3 + 3, "image_id": x} for i, x in enumerate(ids)]
     assert P.library_shot_problems(sh(["img02", "gen01", "img01", "gen02"]), lib) == []
     errs = " ".join(P.library_shot_problems(sh(["gen01", "img02", "img02", "img01", "gen02", "img01"]), lib))
-    assert "первый кадр" in errs and "уже был" in errs and "логотип ближе" in errs
+    assert "первый кадр" in errs and "слишком близко" in errs and "логотип ближе" in errs
 
 
 def test_split_library_gives_each_video_its_own_images():
@@ -459,3 +459,13 @@ def test_clean_queries_drops_metaphors_and_text_objects():
     got = P.clean_queries(["toolbox on wooden table", "open padlock on wooden table", "coin stack on wooden surface",
                            "empty wooden store shelf", "laptop on desk", "automatic sliding gate", "x"])
     assert got == ["open padlock on wooden table", "empty wooden store shelf", "automatic sliding gate"]
+
+
+def test_fill_gaps_uses_spares_then_second_founder_crop():
+    lib = {"img02": {"kind": "founder"}, "img01": {"kind": "brand"}, "gen1": {"kind": "generated"}, "gen2": {"kind": "generated"}}
+    mk = lambda ids: [{"line": "T", "start": i, "end": i + 1, "image_id": x, "source_type": "original", "fit": True} for i, x in enumerate(ids)]
+    videos = [mk(["img02", "gen1", None, None, None, None, None, None, None, "img01"])]
+    left = P.fill_gaps(videos, lib, {"gen1": 1})
+    ids = [s["image_id"] for s in videos[0]]
+    assert ids[2] == "gen2" and ids.count("img02") == 2 and left == 5
+    assert videos[0][ids.index("img02", 1)]["focus"] == 0

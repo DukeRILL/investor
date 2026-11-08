@@ -189,6 +189,7 @@ def library_shot_problems(shots: list[dict], library: dict[str, dict]) -> list[s
         errs.append("первый кадр должен быть реальным фото основателей")
     logo_at: list[int] = []
     seen: dict[str, int] = {}
+    founder_uses: dict[str, int] = {}
     for i, s in enumerate(shots):
         img = s.get("image_id")
         item = library.get(img)
@@ -201,6 +202,13 @@ def library_shot_problems(shots: list[dict], library: dict[str, dict]) -> list[s
             if logo_at and i - logo_at[-1] < LOGO_GAP:
                 errs.append(f"кадр {i + 1}: логотип ближе {LOGO_GAP} кадров к прошлому")
             logo_at.append(i)
+        elif item.get("kind") == "founder" and img in seen:
+            # решение Ильи 2026-11-08: фото основателей можно показать второй раз с другим кадрированием, не ближе 7 кадров
+            if i - seen[img] < LOGO_GAP or shots[seen[img]].get("focus") == s.get("focus") or founder_uses.get(img, 1) >= 2:
+                errs.append(f"кадр {i + 1}: {img} слишком близко или то же кадрирование")
+            founder_uses[img] = founder_uses.get(img, 1) + 1
+            seen[img] = i
+            continue
         elif img in seen:
             errs.append(f"кадр {i + 1}: {img} уже был в кадре {seen[img] + 1}")
         seen.setdefault(img, i)
@@ -284,3 +292,33 @@ BANNED_QUERY_RE = re.compile(r"toolbox|tool ?belt|wrench|screw|bolt|puzzle|rubik
 def clean_queries(queries: list[str]) -> list[str]:
     """Запросы для стоков без метафор и без предметов с текстом: DeepSeek нарушает запрет в промте, поэтому проверяет код."""
     return [q for q in queries if q and not BANNED_QUERY_RE.search(q) and 2 <= len(q.split()) <= 5]
+
+
+def fill_gaps(videos: list[list[dict]], library: dict[str, dict], used: dict[str, int], max_videos: int = 3) -> int:
+    """Закрывает пробелы в раскладке: сначала неиспользованные в ролике сгенерированные (у кого меньше показов),
+    потом второй показ фото основателей другим кадрированием не ближе LOGO_GAP кадров. Возвращает число оставшихся пробелов."""
+    founder = next((k for k, v in library.items() if v.get("kind") == "founder"), None)
+    for _ in range(40):
+        progress = False
+        order = sorted(range(len(videos)), key=lambda i: -sum(s["image_id"] is None for s in videos[i]))
+        for vi in order:
+            shots = videos[vi]
+            idx = next((i for i, s in enumerate(shots) if s["image_id"] is None), None)
+            if idx is None:
+                continue
+            have = {s["image_id"] for s in shots}
+            spare = sorted((k for k, v in library.items() if v.get("kind") == "generated" and k not in have and used.get(k, 0) < max_videos),
+                           key=lambda k: (used.get(k, 0), k))
+            if spare:
+                shots[idx].update(image_id=spare[0], source_type="generated", fit=False)
+                used[spare[0]] = used.get(spare[0], 0) + 1
+                progress = True
+                continue
+            pos = [i for i, s in enumerate(shots) if s["image_id"] == founder]
+            far = [i for i, s in enumerate(shots) if s["image_id"] is None and all(abs(i - j) >= LOGO_GAP for j in pos)]
+            if founder and len(pos) == 1 and far:
+                shots[far[0]].update(image_id=founder, source_type="original", fit=False, focus=0, effect="zoom_in")
+                progress = True
+        if not progress:
+            break
+    return sum(s["image_id"] is None for sh in videos for s in sh)
