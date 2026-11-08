@@ -172,7 +172,9 @@ def stock_one(job: str, s: int, image_id: str, prompt: str) -> dict:
     if not q or not (os.environ.get("PIXABAY_API_KEY") or os.environ.get("PEXELS_API_KEY")):
         return {"found": False, "why": "нет запроса или ключа"}
     jd = job_dir(job)
-    got = stock.pick(q, DATA / "stock", C.detect_faces, set())
+    import imagedb
+    db = imagedb.connect(DATA / "images.sqlite")
+    got = stock.pick(q, DATA / "stock", C.detect_faces, set(), db=db, issue=job)
     if not got:
         return {"found": False, "query": q}
     gdir = jd / "generated" / f"s{s}"
@@ -223,6 +225,10 @@ def render_one(job: str, s: int) -> dict:
     info["stock"] = {k: v["stock"] for k, v in images.items() if v.get("stock") and any(x["image_id"] == k for x in scenes)}
     info["counts"] = {"original": sum(x["source_type"] == "original" for x in scenes), "generated": sum(x["source_type"] == "generated" for x in scenes)}
     out.with_suffix(".json").write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
+    import imagedb  # показ фиксируется в базе: через 30 дней картинку можно брать снова
+    db = imagedb.connect(DATA / "images.sqlite")
+    for st in info["stock"].values():
+        imagedb.mark_used(db, st["id"], job, out.name)
     return {k: v for k, v in info.items() if k != "scenes"} | {"file": f"/out/{out.name}", "path": str(out)}
 
 

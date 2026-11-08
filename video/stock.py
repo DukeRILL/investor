@@ -104,8 +104,14 @@ def usable(c: dict, faces, used_hashes: set[str], raw: bytes) -> str | None:
     return None
 
 
-def pick(query: str, outdir: Path, detect_faces, used_hashes: set[str], http=None, fetch=None) -> dict | None:
+def pick(query: str, outdir: Path, detect_faces, used_hashes: set[str], http=None, fetch=None, db=None, issue: str | None = None) -> dict | None:
     """Лучшее подходящее фото по запросу: скачивает кандидатов по порядку, пока не найдёт без людей."""
+    if db is not None:  # сначала своя база: картинка не на кулдауне 30 дней, файл на месте, API не трогаем
+        import imagedb
+        for r in imagedb.find_local(db, query, issue, exclude=set(), limit=5):
+            if Path(r["file"]).exists() and r["id"] != "":
+                return {"source": r["source"], "id": r["id"], "page": r["page"], "author": r["author"], "width": r["width"],
+                        "height": r["height"], "query": query, "file": r["file"], "license": r["license"], "rejected_before": [], "from_db": True}
     http = http or httpx.Client(timeout=60, follow_redirects=True)
     fetch = fetch or (lambda u: http.get(u).raise_for_status().content)
     rejected = []
@@ -132,5 +138,9 @@ def pick(query: str, outdir: Path, detect_faces, used_hashes: set[str], http=Non
         path = outdir / f"{c['id']}.jpg"
         img.convert("RGB").save(path, quality=92)
         used_hashes.add(hashlib.sha1(raw).hexdigest())
+        if db is not None:
+            import imagedb
+            imagedb.add(db, id=c["id"], source=c["source"], kind="stock", file=str(path), tags=c.get("tags", ""), query=query,
+                        license=LICENSES[c["source"]], page=c["page"], author=c["author"], width=c["width"], height=c["height"])
         return {**c, "file": str(path), "license": LICENSES[c["source"]], "rejected_before": rejected}
     return None

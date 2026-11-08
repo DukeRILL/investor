@@ -483,3 +483,27 @@ def test_scenario_without_valid_hook_is_rejected_before_voice():
     sc = {"scenes": [{"voice": "Привет, друзья, сегодня расскажем про компанию.", "on_screen": ""}] * 6}
     errs = A.check_scenario(sc, "текст", set())
     assert any("хук" in e or "hook" in e for e in errs)
+
+
+def test_stock_pick_uses_local_db_and_cooldown(tmp_path, monkeypatch):
+    import imagedb
+    db = imagedb.connect(tmp_path / "i.sqlite")
+    f = tmp_path / "px1.jpg"; f.write_bytes(png(1200, 1800))
+    imagedb.add(db, id="pixabay-1", source="pixabay", kind="stock", file=str(f), tags="ship, harbor", query="cargo ship", license="L", width=1200, height=1800)
+    monkeypatch.setattr(stock, "search", lambda q, http=None: 1 / 0)  # API не должен вызываться
+    got = stock.pick("cargo ship port", tmp_path, lambda i: [], set(), db=db, issue="j2")
+    assert got["id"] == "pixabay-1" and got["from_db"]
+    imagedb.mark_used(db, "pixabay-1", "j1", "v.mp4")  # показ в другом выпуске: кулдаун 30 дней
+    monkeypatch.setattr(stock, "search", lambda q, http=None: [])
+    assert stock.pick("cargo ship port", tmp_path, lambda i: [], set(), db=db, issue="j2") is None
+    import time
+    assert imagedb.cooling_down(db, "pixabay-1", "j2", now=time.time() + 31 * 86400) is False  # через 30 дней снова доступна
+
+
+def test_stock_pick_saves_new_find_in_db(tmp_path, monkeypatch):
+    import imagedb
+    db = imagedb.connect(tmp_path / "i.sqlite")
+    monkeypatch.setattr(stock, "search", lambda q, http=None: [{"source": "pixabay", "id": "pixabay-9", "tags": "ship", "url": "u", "page": "p",
+                        "author": "a", "width": 1200, "height": 1800}])
+    got = stock.pick("ship", tmp_path, lambda i: [], set(), fetch=lambda u: png(1200, 1800), db=db, issue="j")
+    assert got["id"] == "pixabay-9" and imagedb.report(db)["images"] == 1
