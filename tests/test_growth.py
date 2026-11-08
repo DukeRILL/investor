@@ -380,3 +380,47 @@ def test_tgstat_quota_month_is_beijing_month(make_app):
     late = datetime(2026, 11, 30, 17, tzinfo=timezone.utc)  # 01:00 on 1 December in Beijing
     collect.collect_tgstat(app, late)
     assert db(app).provider_calls("tgstat", "2026-12") == 1 and db(app).provider_calls("tgstat", "2026-11") == 0
+
+
+class Crash(BaseException):
+    """A killed process: not caught by `except Exception`."""
+
+
+def prepared_app(make_app):
+    stage1 = lambda reg, p: {"candidates": [cand("Acme"), cand("B", industry="hr"), cand("C", industry="edtech")]}
+    app = make_app(deepseek=FakeDeepSeek([stage1, lambda reg, p: good_report(reg)]))
+    unicorn.prepare(app, DAY)
+    return app
+
+
+def test_crash_while_sending_the_post_never_sends_it_twice(make_app):
+    app = prepared_app(make_app)
+    real = app.telegram.send_photo
+    app.telegram.send_photo = app.telegram.send = lambda *a, **k: (_ for _ in ()).throw(Crash())
+    with pytest.raises(Crash):
+        unicorn.publish(app, DAY)
+    app.telegram.send_photo, app.telegram.send = real, FakeTelegram.send.__get__(app.telegram)
+    assert unicorn.publish(app, DAY) == "unknown_sent"
+    assert not any("Компания дня" in m.get("html", "") for m in app.telegram.sent)
+    assert app.store.draft_get(DAY)["status"] == "published" and "Проверьте канал" in app.telegram.sent[-1]["html"]
+    assert unicorn.publish(app, DAY) == "already_published"
+
+
+def test_failed_send_is_retried_and_page_is_reused(make_app):
+    app = prepared_app(make_app)
+    app.telegram.fail = True
+    assert unicorn.publish(app, DAY) == "failed"
+    app.telegram.fail = False
+    pages = len(app.telegraph.pages)
+    assert unicorn.publish(app, DAY) == "published"
+    assert len(app.telegraph.pages) == pages  # page_url was saved before the failing send
+    assert sum("Компания дня" in m.get("html", "") for m in app.telegram.sent) == 1
+
+
+def test_click_cap_holds_under_parallel_requests(make_app):
+    from concurrent.futures import ThreadPoolExecutor
+    app = published_app(make_app)
+    link = db(app).links()[0]
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(lambda i: db(app).add_traffic(link["id"], "click", f"k{i}", daily_cap=5), range(40)))
+    assert db(app).traffic_counts()[("telegraph", "click")] == 5

@@ -28,7 +28,6 @@ def resolve_click(app, code: str, user_agent: str, ip: str, salt: str) -> str | 
     now = datetime.now(timezone.utc)
     kind = "bot_click" if BOT_UA.search(user_agent or "") or not user_agent else "click"
     visitor = hashlib.sha256(f"{salt}|{now.date()}|{ip}".encode()).hexdigest()[:20]  # not the spoofable UA
-    if gdb.traffic_today(link["id"], now.date().isoformat()) >= DAILY_EVENT_CAP:
-        return target  # redirect still works, but the table cannot be flooded
-    gdb.add_traffic(link["id"], kind, f"{kind}:{link['id']}:{visitor}", now.isoformat(timespec="seconds"))
+    gdb.add_traffic(link["id"], kind, f"{kind}:{link['id']}:{visitor}", now.isoformat(timespec="seconds"),
+                    daily_cap=DAILY_EVENT_CAP)  # redirect always works; the table cannot be flooded
     return target

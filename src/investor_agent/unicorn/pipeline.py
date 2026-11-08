@@ -602,6 +602,12 @@ def publish(app: App, today: str | None = None) -> str:
     report = payload["report"]
     registry = _registry_from(payload["sources"])
     date_str = ru_date(datetime.fromisoformat(today))
+    intent = f"unicorn_post_intent:{today}"
+    if app.store.get(intent) == "sending":  # a crash between sending the post and recording it: never send twice
+        app.store.draft_mark(today, "published", page_url=draft.get("page_url"), message_ids=[])
+        app.notify_admin(f"Школа единорогов: процесс оборвался при отправке поста {today}. Пост мог уйти в канал, "
+                         "повторно не отправляю. Проверьте канал.")
+        return "unknown_sent"
     try:
         url = draft.get("page_url")
         if not url:
@@ -610,8 +616,11 @@ def publish(app: App, today: str | None = None) -> str:
             url = create_pages(app.telegraph, title, nodes + growth_publish.begin(app, today, report))  # + subscribe CTA
         app.store.draft_mark(today, "ready", page_url=url)
         growth_publish.page_created(app, today, report, url)  # share block; never raises
+        app.store.set(intent, "sending")
         mid = _send_post(app, report, date_str, url)
+        app.store.set(intent, "sent")
     except Exception as exc:  # noqa: BLE001
+        app.store.set(intent, "")  # the call failed (not a crash): a retry may send
         app.store.draft_mark(today, "ready", error=str(exc)[:500])
         app.notify_admin(f"Школа единорогов: публикация {today} не удалась: {exc}")
         return "failed"

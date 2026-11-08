@@ -130,8 +130,17 @@ class GrowthDb:
             return [dict(r) for r in c.execute("SELECT * FROM tracking_links ORDER BY id")]
 
     # events -------------------------------------------------------------------------------------------------
-    def add_traffic(self, link_id: int, event_type: str, key: str, at: str | None = None) -> bool:
+    def add_traffic(self, link_id: int, event_type: str, key: str, at: str | None = None,
+                    daily_cap: int | None = None) -> bool:
+        """Insert unless the key exists; with daily_cap the count and the insert share one write transaction
+        (BEGIN IMMEDIATE), so parallel requests cannot exceed the cap."""
         with self.store._conn() as c:
+            if daily_cap is not None:
+                day = (at or utcnow())[:10]
+                n = c.execute("SELECT COUNT(*) n FROM traffic_events WHERE tracking_link_id=? AND occurred_at >= ?",
+                              (link_id, day)).fetchone()["n"]
+                if n >= daily_cap:
+                    return False
             cur = c.execute("INSERT OR IGNORE INTO traffic_events(tracking_link_id, event_type, occurred_at, "
                             "event_deduplication_key) VALUES (?,?,?,?)", (link_id, event_type, at or utcnow(), key))
             return cur.rowcount == 1
@@ -166,11 +175,6 @@ class GrowthDb:
             args.append(pub_id)
         with self.store._conn() as c:
             return {(r["source"], r["event_type"]): r["n"] for r in c.execute(sql + " GROUP BY 1, 2", args)}
-
-    def traffic_today(self, link_id: int, day: str) -> int:
-        with self.store._conn() as c:
-            return c.execute("SELECT COUNT(*) n FROM traffic_events WHERE tracking_link_id=? AND occurred_at >= ?",
-                             (link_id, day)).fetchone()["n"]
 
     # snapshots ----------------------------------------------------------------------------------------------
     def snapshot_add(self, pub_id: int, source: str, metric: str, value: float, provider: str,
