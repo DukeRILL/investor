@@ -532,19 +532,45 @@ def _first_heading(nodes: list, default: str) -> str:
     return default
 
 
-def create_pages(telegraph, title: str, nodes: list) -> str:
+def create_pages(telegraph, title: str, nodes: list, progress=None) -> str:
     """One Telegraph page, or linked parts when the issue is long. The link to the next part carries the title of
-    the section it starts with (not "part 2"). Returns the first URL."""
+    the section it starts with (not "part 2"). Returns the first URL.
+
+    progress = (get, put) over a JSON dict {"n": parts, "urls": {index: url}, "creating": index|None}. It is saved
+    before and after every createPage, so after a crash the chain is continued: finished parts are reused, a part
+    whose createPage may have run is looked up by its exact title (a failed or ambiguous lookup raises: a second
+    page is never created blindly)."""
     pages = paginate(nodes)
+    get, put = progress or (lambda: {}, lambda st: None)
+    st = get() or {}
+    if st.get("n") not in (None, len(pages)):
+        raise RuntimeError("страницы статьи после сбоя разбиты иначе, чем до него: нужна ручная сверка в Telegraph")
+    st["n"] = len(pages)
+    urls = st.setdefault("urls", {})
     next_url, next_name = None, ""
     for index in range(len(pages) - 1, -1, -1):
         content = list(pages[index])
         name = _first_heading(pages[index], "Продолжение")
+        if str(index) in urls:
+            next_url, next_name = urls[str(index)], name
+            continue
         if next_url:
             content.append({"tag": "p", "children": [{"tag": "a", "attrs": {"href": next_url},
                                                       "children": [f"Читать дальше: {next_name} →"]}]})
         page_title = title if index == 0 else f"{name} · {title}"
-        next_url, next_name = telegraph.create_page(page_title, content), name
+        if st.get("creating") == index:  # createPage may have run just before the crash
+            found = telegraph.find_page(page_title)
+            if found:
+                urls[str(index)], st["creating"] = found, None
+                put(st)
+                next_url, next_name = found, name
+                continue
+        st["creating"] = index
+        put(st)
+        url = telegraph.create_page(page_title, content)
+        urls[str(index)], st["creating"] = url, None
+        put(st)
+        next_url, next_name = url, name
     return next_url
 
 
@@ -616,17 +642,16 @@ def publish(app: App, today: str | None = None) -> str:
         if not url:
             prune_dead_media(report, app.http)  # dead pictures/videos are dropped just before the page is built
             title, nodes = build_page(report, registry, date_str)
-            page_intent = f"unicorn_page_intent:{today}"
-            if app.store.get(page_intent) == "creating":  # a crash after createPage, before page_url was saved
-                url = app.telegraph.find_page(title)  # a failed or ambiguous lookup raises: never create a 2nd page
-            if not url:
-                app.store.set(page_intent, "creating")
-                url = create_pages(app.telegraph, title, nodes + growth_publish.begin(app, today, report))  # + CTA
+            pkey = f"unicorn_pages:{today}"
+            url = create_pages(app.telegraph, title, nodes + growth_publish.begin(app, today, report),  # + CTA
+                               (lambda: json.loads(app.store.get(pkey) or "{}"),
+                                lambda st: app.store.set(pkey, json.dumps(st))))
         app.store.draft_mark(today, "ready", page_url=url)
-        app.store.set(f"unicorn_page_intent:{today}", "")
         growth_publish.page_created(app, today, report, url)  # share block; never raises
         if state.startswith("sent:"):
             mid = int(state.split(":", 1)[1])  # the post is already in the channel: only finish
+            if mid <= 0:
+                raise RuntimeError("в состоянии публикации неверный message_id")
         else:
             app.store.set(skey, "sending")
             try:
@@ -682,6 +707,8 @@ def reconcile(app: App, today: str, message_id: int | None = None, not_sent: boo
         return "nothing_to_reconcile"
     if bool(message_id) == bool(not_sent):
         raise ValueError("give exactly one of --message-id and --not-sent")
+    if message_id is not None and message_id <= 0:
+        raise ValueError("message_id must be a positive number")
     if not_sent:
         app.store.set(_state_key(today), "")
         return "cleared"

@@ -84,12 +84,24 @@ def post(app: App, issue: str, options: list[str]) -> int | None:
     """Send the poll for issue `issue` to the channel. Failures go to the admin, never stop the publication."""
     if app.store.get(poll_key(issue)):
         return None
+    intent = f"unicorn_poll_intent:{issue}"
+    if app.store.get(intent) == "sending":  # a crash or an unanswered call: it may be in the channel, never repeat
+        if app.store.get(intent + ":told") != "1":
+            app.store.set(intent + ":told", "1")
+            app.notify_admin(f"Школа единорогов: неизвестно, ушло ли голосование на {issue} в канал. Автоматически "
+                             "не повторяю. Проверьте канал; если опроса нет, "
+                             f"отправьте его вручную: python -m investor_agent poll --date {issue}")
+        return None
     chat = app.target_chat()
+    app.store.set(intent, "sending")
     try:
         mid = app.telegram.send_poll(chat, QUESTION, options)
     except TelegramError as exc:
+        if not exc.ambiguous:
+            app.store.set(intent, "")  # a definite refusal: a later run may try again
         app.notify_admin(f"Школа единорогов: голосование за тему на {issue} не отправлено: {exc}")
         return None
+    app.store.set(intent, "")
     remember(app, issue, options)
     app.store.set(poll_key(issue), json.dumps({"chat": chat, "message_id": mid, "options": options,
                                                "posted_at": utc_iso()}, ensure_ascii=False))

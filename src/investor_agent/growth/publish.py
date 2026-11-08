@@ -70,7 +70,7 @@ def page_created(app, issue_date: str, report: dict, url: str) -> None:
 
 def post_sent(app, issue_date: str, report: dict, url: str, message_id: int) -> None:
     """Remember the post and give it the second button ('Отправить другу' = Telegram share of the channel post)."""
-    if not enabled(app):
+    if not enabled(app) or message_id <= 0:
         return
     try:
         from datetime import datetime, timezone  # noqa: PLC0415

@@ -73,7 +73,13 @@ class FakeTelegram:
         return {"options": [{"text": o, "voter_count": v} for o, v in votes]}
 
 
+class Crash(BaseException):
+    """A killed process: not caught by `except Exception`."""
+
+
 class FakeTelegraph:
+    crash_after_create = 0  # raise Crash right after the N-th createPage stored its page (the answer is lost)
+
     def __init__(self):
         self.pages = []
         self.by_url = {}
@@ -84,6 +90,8 @@ class FakeTelegraph:
         self.pages.append((title, nodes))
         url = f"https://telegra.ph/test-page-{len(self.pages)}" if len(self.pages) > 1 else "https://telegra.ph/test-page"
         self.by_url[url] = (title, list(nodes))
+        if self.crash_after_create and len(self.pages) == self.crash_after_create:
+            raise Crash()
         return url
 
     def edit_page(self, url, title, nodes):

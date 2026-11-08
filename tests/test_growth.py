@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
-from conftest import FakeDeepSeek, FakeTelegram
+from conftest import Crash, FakeDeepSeek, FakeTelegram
 from test_agents import cand, good_report
 
 from investor_agent.growth import collect, publish as gpub, redirect, report as greport, share
@@ -255,7 +255,7 @@ def test_tgstat_quota_error_pauses_until_next_month_and_keeps_data(make_app):
     assert collect.collect_tgstat(app, datetime(2026, 11, 10, 1, tzinfo=timezone.utc)) == "error"
     assert collect.collect_tgstat(app, datetime(2026, 11, 11, 1, tzinfo=timezone.utc)) == "paused"
     assert len(app.http.calls) == 2
-    assert db(app).provider("tgstat")["disabled_until"].startswith("2026-12-01")
+    assert db(app).provider("tgstat")["disabled_until"].startswith("2026-11-30T16")
     assert db(app).snapshot_latest(0, "telegram", "participants_count", "tgstat")["value"] == 120
 
 
@@ -362,7 +362,7 @@ def test_webhook_conflict_is_reported_not_removed(make_app):
 import pytest
 
 
-@pytest.mark.parametrize("status,until", [(401, "2026-11-12"), (403, "2026-11-12"), (402, "2026-12-01"), (429, "2026-12-01")])
+@pytest.mark.parametrize("status,until", [(401, "2026-11-12"), (403, "2026-11-12"), (402, "2026-11-30T16"), (429, "2026-11-30T16")])
 def test_tgstat_http_errors_pause(make_app, status, until):
     app = tgstat_app(make_app, HttpError(status, "x"))
     assert collect.collect_tgstat(app, datetime(2026, 11, 9, 1, tzinfo=timezone.utc)) == "error"
@@ -380,10 +380,6 @@ def test_tgstat_quota_month_is_beijing_month(make_app):
     late = datetime(2026, 11, 30, 17, tzinfo=timezone.utc)  # 01:00 on 1 December in Beijing
     collect.collect_tgstat(app, late)
     assert db(app).provider_calls("tgstat", "2026-12") == 1 and db(app).provider_calls("tgstat", "2026-11") == 0
-
-
-class Crash(BaseException):
-    """A killed process: not caught by `except Exception`."""
 
 
 def prepared_app(make_app):
@@ -507,14 +503,11 @@ def test_reconcile_needs_exactly_one_choice_and_a_pending_state(make_app):
 
 
 def crash_after_page(app):
-    real = app.store.draft_mark
-
-    def boom(*a, **k):
-        app.store.draft_mark = real
-        raise Crash()
-    app.store.draft_mark = boom
+    """createPage ran (the page exists) but its answer was lost: the state says 'creating'."""
+    app.telegraph.crash_after_create = 1
     with pytest.raises(Crash):
         unicorn.publish(app, DAY)
+    app.telegraph.crash_after_create = 0
     assert len(app.telegraph.pages) == 1 and not app.store.draft_get(DAY).get("page_url")
 
 
@@ -580,3 +573,283 @@ def test_network_errors_are_marked_ambiguous_and_4xx_are_not():
         with pytest.raises(TelegramError) as info:
             TelegramClient(H(exc), "tok").send("@c", "x")
         assert info.value.ambiguous is ambiguous and "tok" not in str(info.value)
+
+
+# --- review 3 ---------------------------------------------------------------------------------------------------
+import httpx
+
+from investor_agent import glossary
+from investor_agent.http import HttpxClient
+from investor_agent.telegram import TelegramClient
+from investor_agent.unicorn import poll as upoll
+
+
+class Wire:
+    """A production HttpxClient on a mock transport; records every POST that actually left."""
+
+    def __init__(self, responder):
+        self.calls, self.responder = [], responder
+        self.http = HttpxClient(retries=3)
+        self.http._client = httpx.Client(transport=httpx.MockTransport(self._handle))
+
+    def _handle(self, request):
+        body = json.loads(request.content or b"{}")
+        self.calls.append((request.url.path.rsplit("/", 1)[-1], body))
+        return self.responder(len(self.calls), request.url.path.rsplit("/", 1)[-1], body)
+
+
+def ok(result):
+    return httpx.Response(200, json={"ok": True, "result": result})
+
+
+def test_httpx_502_on_send_is_one_post_and_ambiguous():
+    wire = Wire(lambda n, method, body: httpx.Response(502, text="bad gateway") if n == 1 else ok({"message_id": 9}))
+    with pytest.raises(TelegramError) as info:
+        TelegramClient(wire.http, "tok").send("@c", "x")
+    assert len(wire.calls) == 1 and info.value.ambiguous  # 502 -> 200 would have posted twice
+
+
+def test_httpx_idempotent_calls_still_retry_and_429_is_retried(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    wire = Wire(lambda n, method, body: httpx.Response(502) if n == 1 else ok(True))
+    assert TelegramClient(wire.http, "tok").pin("@c", 5) is True and len(wire.calls) == 2  # pin is idempotent
+    wire = Wire(lambda n, method, body: httpx.Response(429, json={"ok": False}) if n == 1 else ok({"message_id": 3}))
+    assert TelegramClient(wire.http, "tok").send("@c", "x") == 3 and len(wire.calls) == 2  # refused, not executed
+
+
+def test_httpx_408_and_telegraph_create_page_are_not_repeated(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    wire = Wire(lambda n, method, body: httpx.Response(408, text="timeout"))
+    with pytest.raises(TelegramError) as info:
+        TelegramClient(wire.http, "tok").send("@c", "x")
+    assert len(wire.calls) == 1 and info.value.ambiguous
+    wire = Wire(lambda n, method, body: httpx.Response(502) if n == 1 else httpx.Response(200, json={"ok": True, "result": {"url": "u"}}))
+    with pytest.raises(TelegramError) as info:
+        TelegraphClient(wire.http, lambda: "tok", lambda t: None).create_page("T", [])
+    assert [c[0] for c in wire.calls] == ["createPage"] and info.value.ambiguous
+
+
+def test_publish_over_real_http_stack_502_means_manual_reconcile(make_app):
+    app = prepared_app(make_app)
+    channel_posts = []
+
+    def responder(n, method, body):
+        if body.get("chat_id") == "@investor_duker" and "Компания дня" in (body.get("text") or body.get("caption") or ""):
+            channel_posts.append(n)
+            return httpx.Response(502, text="bad gateway") if len(channel_posts) == 1 else ok({"message_id": 9})
+        return ok({"message_id": 5})
+    wire = Wire(responder)
+    app.telegram = TelegramClient(wire.http, "tok")
+    assert unicorn.publish(app, DAY) == "requires_manual_reconcile"
+    assert unicorn.publish(app, DAY) == "requires_manual_reconcile"
+    assert len(channel_posts) == 1  # exactly one network POST to the channel, ever
+    assert unicorn.reconcile(app, DAY, message_id=9) == "published"
+    assert len(channel_posts) == 1
+
+
+# message_id
+@pytest.mark.parametrize("result", [{"message_id": -5}, {"message_id": 0}, {}, {"message_id": "x"}])
+def test_invalid_message_id_is_an_ambiguous_error(result):
+    wire = Wire(lambda n, method, body: ok(result))
+    with pytest.raises(TelegramError) as info:
+        TelegramClient(wire.http, "tok").send("@c", "x")
+    assert info.value.ambiguous
+    with pytest.raises(TelegramError):
+        TelegramClient(Wire(lambda n, m, b: ok(result)).http, "tok").send_poll("@c", "q", ["a", "b"])
+
+
+def test_negative_message_id_cannot_be_reconciled_or_recorded(make_app):
+    app = prepared_app(make_app)
+    app.store.set(unicorn._state_key(DAY), unicorn.MANUAL)
+    with pytest.raises(ValueError):
+        unicorn.reconcile(app, DAY, message_id=-3)
+    assert unicorn.reconcile(app, DAY, message_id=0 or None, not_sent=True) == "cleared"
+    db(app).publication_upsert(DAY, "Acme")
+    gpub.post_sent(app, DAY, {"company_name": "Acme"}, "https://telegra.ph/x", -1)
+    assert db(app).publication_by_date(DAY)["telegram_message_id"] is None
+    app.store.set(unicorn._state_key(DAY), "sent:-4")
+    assert unicorn.publish(app, DAY) == "failed" and app.store.draft_get(DAY)["status"] == "ready"
+
+
+# poll
+def test_crash_after_poll_sent_does_not_send_it_twice(make_app):
+    app = prepared_app(make_app)
+    sent = []
+
+    def poll_then_crash(chat, q, options):
+        sent.append(q)
+        raise Crash()
+    app.telegram.send_poll = poll_then_crash
+    with pytest.raises(Crash):
+        unicorn.publish(app, DAY)
+    assert app.store.draft_get(DAY)["status"] == "ready"
+    app.telegram.send_poll = lambda chat, q, o: sent.append(q) or 50
+    assert unicorn.publish(app, DAY) == "published"
+    assert len(sent) == 1 and len(posts(app)) == 1  # the poll was not repeated, the post neither
+
+
+def test_ambiguous_poll_error_is_not_retried_but_a_refusal_is(make_app):
+    app = make_app()
+    told = []
+    app.notify_admin = told.append
+    calls = []
+
+    def amb(chat, q, o):
+        calls.append(1)
+        raise TelegramError("sendPoll: timeout", ambiguous=True)
+    app.telegram.send_poll = amb
+    assert upoll.post(app, "2026-11-10", ["a", "b"]) is None and upoll.post(app, "2026-11-10", ["a", "b"]) is None
+    assert len(calls) == 1 and len(told) == 2
+    def refuse(chat, q, o):
+        calls.append(2)
+        raise TelegramError("sendPoll: chat not found")
+    app.telegram.send_poll = refuse
+    upoll.post(app, "2026-11-11", ["a", "b"])
+    upoll.post(app, "2026-11-11", ["a", "b"])
+    assert calls.count(2) == 2
+
+
+# glossary
+def glossary_app(make_app):
+    app = make_app()
+    glossary.add_terms(app, glossary.clean_terms([{"term": "ARR", "group": glossary.GROUPS[0],
+                                                   "definition": "Годовая повторяющаяся выручка компании."}]))
+    return app
+
+
+def test_crash_while_sending_the_glossary_is_not_repeated_automatically(make_app):
+    app = glossary_app(make_app)
+    app.telegram.send = lambda *a, **k: (_ for _ in ()).throw(Crash())
+    with pytest.raises(Crash):
+        glossary.sync(app)
+    app.telegram.__dict__.pop("send")
+    assert glossary.sync(app) == "needs_manual" and not app.telegram.sent[1:]
+    assert len([m for m in app.telegram.sent if "ГЛОССАРИЙ" in m["html"]]) == 0
+    assert glossary.sync(app, force=True) == "created"  # the manual command after the owner checked the channel
+    assert len([m for m in app.telegram.sent if "ГЛОССАРИЙ" in m["html"]]) == 1
+
+
+def test_ambiguous_glossary_send_waits_but_a_refusal_retries(make_app):
+    app = glossary_app(make_app)
+    app.notify_admin = lambda t: None
+    app.telegram.send = lambda *a, **k: (_ for _ in ()).throw(TelegramError("timeout", ambiguous=True))
+    assert glossary.sync(app) == "failed"
+    app.telegram.__dict__.pop("send")
+    assert glossary.sync(app) == "needs_manual"
+
+
+def test_refused_glossary_send_is_retried(make_app):
+    app2 = glossary_app(make_app)
+    app2.notify_admin = lambda t: None
+    app2.telegram.send = lambda *a, **k: (_ for _ in ()).throw(TelegramError("chat not found"))
+    assert glossary.sync(app2) == "failed"
+    app2.telegram.__dict__.pop("send")
+    assert glossary.sync(app2) == "created"
+
+
+def test_glossary_message_id_is_saved_before_the_pin(make_app):
+    app = glossary_app(make_app)
+    app.telegram.pin = lambda *a: (_ for _ in ()).throw(Crash())
+    with pytest.raises(Crash):
+        glossary.sync(app)
+    state = json.loads(app.store.get(glossary.STATE_KEY))
+    assert state["message_ids"] == [1] and "sending" not in state
+    app.telegram.__dict__.pop("pin")
+    assert glossary.sync(app) == "updated"
+    heads = [m["html"] for m in app.telegram.sent if "ГЛОССАРИЙ «ШКОЛЫ" in m["html"]]
+    assert len(heads) == 1 and len(app.telegram.sent) == 2  # message 1 edited (not re-posted), message 2 posted once
+
+
+# telegraph parts
+def big_nodes():
+    nodes = []
+    for i in range(6):
+        nodes.append({"tag": "h3", "children": [f"Раздел {i}"]})
+        nodes.append({"tag": "p", "children": ["я" * 20_000]})
+    return nodes
+
+
+class Progress:
+    def __init__(self):
+        self.state = {}
+
+    def pair(self):
+        return (lambda: json.loads(json.dumps(self.state)), lambda st: setattr(self, "state", json.loads(json.dumps(st))))
+
+
+def chain_ok(graph, first):
+    seen, url = [], first
+    while url:
+        seen.append(url)
+        url = unicorn.growth_publish.share.next_part_url(graph.by_url[url][1])
+    return seen
+
+
+def test_multipage_chain_survives_a_crash_between_parts_without_duplicates():
+    from conftest import FakeTelegraph
+    graph, prog = FakeTelegraph(), Progress()
+    graph.crash_after_create = 3  # parts 5, 4 saved, part 3 created but its answer lost
+    with pytest.raises(Crash):
+        unicorn.create_pages(graph, "Заголовок", big_nodes(), prog.pair())
+    graph.crash_after_create = 0
+    assert prog.state["creating"] == 3 and len(prog.state["urls"]) == 2
+    first = unicorn.create_pages(graph, "Заголовок", big_nodes(), prog.pair())
+    assert len(graph.pages) == 6 and len(chain_ok(graph, first)) == 6  # found by title, nothing created twice
+    assert prog.state["creating"] is None and len(prog.state["urls"]) == 6
+
+
+def test_multipage_resume_after_a_clean_stop_and_failed_lookup():
+    from conftest import FakeTelegraph
+    graph, prog = FakeTelegraph(), Progress()
+    graph.crash_after_create = 2
+    with pytest.raises(Crash):
+        unicorn.create_pages(graph, "Заголовок", big_nodes(), prog.pair())
+    graph.crash_after_create, graph.fail_lookup = 0, True
+    with pytest.raises(TelegramError):
+        unicorn.create_pages(graph, "Заголовок", big_nodes(), prog.pair())
+    assert len(graph.pages) == 2  # the failed lookup created nothing
+    graph.fail_lookup = False
+    first = unicorn.create_pages(graph, "Заголовок", big_nodes(), prog.pair())
+    assert len(graph.pages) == 6 and len(chain_ok(graph, first)) == 6
+
+
+def test_multipage_changed_split_after_a_crash_needs_manual_check():
+    from conftest import FakeTelegraph
+    graph, prog = FakeTelegraph(), Progress()
+    graph.crash_after_create = 2
+    with pytest.raises(Crash):
+        unicorn.create_pages(graph, "Заголовок", big_nodes(), prog.pair())
+    with pytest.raises(RuntimeError):
+        unicorn.create_pages(graph, "Заголовок", big_nodes()[:4], prog.pair())
+    assert len(graph.pages) == 2
+
+
+# TGStat UTC / Beijing
+def test_tgstat_daily_check_uses_the_beijing_date(make_app):
+    app = tgstat_app(make_app, OK)
+    assert collect.collect_tgstat(app, datetime(2026, 11, 30, 15, tzinfo=timezone.utc)) == "ok"   # 23:00 on 30 Nov, Beijing
+    assert collect.collect_tgstat(app, datetime(2026, 11, 30, 17, tzinfo=timezone.utc)) == "ok"   # 01:00 on 1 Dec: new day
+    assert len(app.http.calls) == 2
+    assert collect.collect_tgstat(app, datetime(2026, 12, 1, 3, tzinfo=timezone.utc)) == "done_today"  # same Beijing day
+
+
+def test_tgstat_same_beijing_day_until_23_59(make_app):
+    app2 = tgstat_app(make_app, OK)
+    assert collect.collect_tgstat(app2, datetime(2026, 11, 9, 1, tzinfo=timezone.utc)) == "ok"   # 09:00 on 9 Nov
+    assert collect.collect_tgstat(app2, datetime(2026, 11, 9, 15, 59, tzinfo=timezone.utc)) == "done_today"  # 23:59 Beijing
+    assert collect.collect_tgstat(app2, datetime(2026, 11, 9, 16, 1, tzinfo=timezone.utc)) == "ok"  # 00:01 on 10 Nov
+
+
+def test_tgstat_pause_ends_at_the_start_of_the_next_beijing_month(make_app):
+    app = tgstat_app(make_app, HttpError(429, "limit"), tgstat_access_until="2027-12-31")
+    assert collect.collect_tgstat(app, datetime(2026, 11, 30, 17, tzinfo=timezone.utc)) == "error"  # already 1 Dec in Beijing
+    assert db(app).provider("tgstat")["disabled_until"] == "2026-12-31T16:00:00+00:00"  # 1 Jan 00:00 Beijing
+    app.http.result = OK
+    assert collect.collect_tgstat(app, datetime(2026, 12, 31, 15, 59, tzinfo=timezone.utc)) == "paused"
+    assert collect.collect_tgstat(app, datetime(2026, 12, 31, 16, 1, tzinfo=timezone.utc)) == "ok"  # 00:01 on 1 Jan, Beijing
+
+
+def test_tgstat_pause_mid_month_ends_on_the_beijing_first(make_app):
+    app2 = tgstat_app(make_app, HttpError(429, "limit"))
+    collect.collect_tgstat(app2, datetime(2026, 11, 10, 1, tzinfo=timezone.utc))
+    assert db(app2).provider("tgstat")["disabled_until"] == "2026-11-30T16:00:00+00:00"

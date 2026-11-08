@@ -147,7 +147,7 @@ def build_messages(terms: dict[str, Term]) -> list[str]:
     return messages
 
 
-def sync(app: App) -> str:
+def sync(app: App, force: bool = False) -> str:
     """Create or update the pinned glossary post(s). Returns created | updated | failed."""
     texts = build_messages(load(app))
     try:
@@ -155,6 +155,16 @@ def sync(app: App) -> str:
     except ValueError:
         state = {}
     chat = app.target_chat()
+    if state.get("sending") is not None and not force:  # a send whose delivery is unknown: not repeated automatically
+        if not state.get("told"):
+            state["told"] = True
+            app.store.set(STATE_KEY, json.dumps(state))
+            app.notify_admin("Глоссарий: неизвестно, ушло ли последнее сообщение в канал. Автоматически не повторяю. "
+                             "Проверьте канал и выполните вручную: python -m investor_agent glossary (если сообщения "
+                             "нет) или удалите дубль после запуска.")
+        return "needs_manual"
+    if force:
+        state.pop("sending", None), state.pop("told", None)
     ids: list[int] = list(state.get("message_ids") or []) if state.get("chat") == chat else []
     result = "updated" if ids else "created"
     try:
@@ -169,11 +179,21 @@ def sync(app: App) -> str:
                         continue
                     if "not found" not in msg:
                         raise
-            new_id = app.telegram.send(chat, text)
+            state.update(chat=chat, message_ids=ids, sending=i)  # intent saved BEFORE the send
+            app.store.set(STATE_KEY, json.dumps(state))
+            try:
+                new_id = app.telegram.send(chat, text)
+            except TelegramError as exc:
+                if not exc.ambiguous:
+                    state.pop("sending", None)
+                raise
+            state.pop("sending", None)
             if i < len(ids):
                 ids[i] = new_id
             else:
                 ids.append(new_id)
+            state.update(chat=chat, message_ids=ids)  # the id is kept at once: a crash cannot lose it
+            app.store.set(STATE_KEY, json.dumps(state))
             if i == 0:
                 try:
                     app.telegram.pin(chat, new_id)

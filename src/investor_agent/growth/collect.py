@@ -17,6 +17,20 @@ TGSTAT_METRICS = ("participants_count", "avg_post_reach", "adv_post_reach_24h", 
                   "er_percent", "daily_reach", "forwards_count", "mentions_count")
 
 
+def bj_date(moment: datetime | str):
+    """Beijing calendar date of a moment (datetime or ISO string)."""
+    if isinstance(moment, str):
+        moment = datetime.fromisoformat(moment)
+    return to_bj(moment).date()
+
+
+def next_bj_month_start(now: datetime) -> datetime:
+    """00:00 Beijing on the 1st of the next Beijing month, as UTC."""
+    bj = to_bj(now)
+    first = (bj.replace(day=1, hour=0, minute=0, second=0, microsecond=0) + timedelta(days=32)).replace(day=1)
+    return first.astimezone(timezone.utc)
+
+
 def month_key(now: datetime) -> str:
     return to_bj(now).strftime("%Y-%m")  # quota month = Beijing month, like every schedule in the project
 
@@ -70,13 +84,13 @@ def tgstat_state(app, now: datetime | None = None) -> str:
     if to_bj(now).date().isoformat() > s.tgstat_access_until:
         return "expired"
     p = gdb.provider("tgstat")
-    if p["disabled_until"] and now.isoformat() < p["disabled_until"]:
+    if p["disabled_until"] and now < datetime.fromisoformat(p["disabled_until"]):
         return "paused"
     month = month_key(now)
     if gdb.provider_calls("tgstat", month) >= s.tgstat_monthly_limit - s.tgstat_reserve:
         return "quota_guard"
     last = gdb.snapshot_latest(0, "telegram", "participants_count", "tgstat")
-    if last and last["measured_at"][:10] == now.date().isoformat():
+    if last and bj_date(last["measured_at"]) == bj_date(now):
         return "done_today"
     return "ok"
 
@@ -95,8 +109,7 @@ def collect_tgstat(app, now: datetime | None = None) -> str:
     except HttpError as exc:
         pause = now + timedelta(hours=24)
         if exc.status in (401, 402, 403, 429):
-            first_next = (now.replace(day=1) + timedelta(days=32)).replace(day=1, hour=0, minute=0, second=0)
-            pause = first_next if exc.status in (402, 429) else now + timedelta(days=3)
+            pause = next_bj_month_start(now) if exc.status in (402, 429) else now + timedelta(days=3)
         gdb.provider_error("tgstat", f"HTTP {exc.status}", iso(pause))
         return "error"
     except Exception as exc:  # noqa: BLE001  (network)

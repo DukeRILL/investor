@@ -36,6 +36,7 @@ def main() -> None:
         print(unicorn.publish(app, args.date))
     elif args.command == "poll":
         issue = args.date or poll.next_issue(unicorn.issue_date())
+        app.store.set(f"unicorn_poll_intent:{issue}", "")  # a manual run: the owner has checked the channel
         options = poll.make_options(app, issue, app.store.recent_archive(14, issue))
         print(json.dumps({"issue": issue, "message_id": poll.post(app, issue, options), "options": options},
                          ensure_ascii=False))
@@ -46,7 +47,7 @@ def main() -> None:
     elif args.command == "digest":
         print(radar_digest.run(app))
     elif args.command == "glossary":
-        print(glossary.sync(app))
+        print(glossary.sync(app, force=True))  # manual run: the owner has checked the channel
     elif args.command == "reconcile":
         print(unicorn.reconcile(app, args.date or unicorn.issue_date(), args.message_id, args.not_sent))
     elif args.command.startswith("growth-"):
@@ -71,7 +72,10 @@ def main() -> None:
             print(link.get("invite_link") or link["target_url"])
     else:
         draft = app.store.draft_get(args.date or unicorn.issue_date())
-        print(json.dumps({"publish_mode": app.settings.publish_mode,
+        with app.store._conn() as c:  # publication states that block a rollback (docs/GROWTH.md)
+            pending = {r["key"].split(":", 1)[1]: r["value"] for r in c.execute(
+                "SELECT key, value FROM kv WHERE key LIKE 'unicorn_publish_state:%' AND value != ''")}
+        print(json.dumps({"publish_mode": app.settings.publish_mode, "unresolved_publish_states": pending,
                           "unicorn": draft and {k: draft[k] for k in ("status", "page_url", "error")},
                           "reader_topic": app.store.get(poll.topic_key(args.date or unicorn.issue_date())),
                           "radar_last_ok": app.store.last_ok_window_end()}, ensure_ascii=False, indent=2))

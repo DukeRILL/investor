@@ -8,6 +8,9 @@ from .http import Http, HttpError
 log = logging.getLogger(__name__)
 
 
+NON_IDEMPOTENT = {"sendMessage", "sendPhoto", "sendPoll", "createChatInviteLink"}  # a repeat would duplicate
+
+
 class TelegramError(RuntimeError):
     """ambiguous=True: the request may have been executed (timeout, connection lost, 5xx) - the caller must not
     assume 'not delivered'. A Telegram answer ok=false or HTTP 4xx is a definite failure."""
@@ -15,6 +18,17 @@ class TelegramError(RuntimeError):
     def __init__(self, message: str = "", ambiguous: bool = False):
         super().__init__(message)
         self.ambiguous = ambiguous
+
+
+def _message_id(result: dict, method: str) -> int:
+    """A positive id or an ambiguous error: the call answered ok but without a usable id (delivery unknown)."""
+    try:
+        mid = int(result["message_id"])
+    except (KeyError, TypeError, ValueError):
+        mid = 0
+    if mid <= 0:
+        raise TelegramError(f"{method}: no valid message_id in the answer", ambiguous=True)
+    return mid
 
 
 class TelegramClient:
@@ -25,10 +39,11 @@ class TelegramClient:
         if not self._token:
             raise TelegramError("TELEGRAM_BOT_TOKEN is not configured")
         try:
+            extra = {} if method not in NON_IDEMPOTENT else {"retry": False}
             data = self.http.request("POST", f"https://api.telegram.org/bot{self._token}/{method}",
-                                     json_body=payload, timeout=60)
+                                     json_body=payload, timeout=60, **extra)
         except HttpError as exc:  # strip URL with token from the message
-            raise TelegramError(f"{method} failed: HTTP {exc.status}", ambiguous=exc.status >= 500) from None
+            raise TelegramError(f"{method} failed: HTTP {exc.status}", ambiguous=exc.status >= 500 or exc.status == 408) from None
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, (OSError, TimeoutError)) or type(exc).__module__.startswith("httpx"):
                 raise TelegramError(f"{method} failed: {type(exc).__name__}", ambiguous=True) from None
@@ -46,14 +61,14 @@ class TelegramClient:
             payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
         if button:
             payload["reply_markup"] = {"inline_keyboard": [[{"text": button[0], "url": button[1]}]]}
-        return int(self._call("sendMessage", payload)["message_id"])
+        return _message_id(self._call("sendMessage", payload), "sendMessage")
 
     def send_photo(self, chat_id: str, photo_url: str, html: str, button: tuple[str, str] | None = None) -> int:
         """Photo by public URL with an HTML caption (max 1024 visible characters)."""
         payload = {"chat_id": chat_id, "photo": photo_url, "caption": html, "parse_mode": "HTML"}
         if button:
             payload["reply_markup"] = {"inline_keyboard": [[{"text": button[0], "url": button[1]}]]}
-        return int(self._call("sendPhoto", payload)["message_id"])
+        return _message_id(self._call("sendPhoto", payload), "sendPhoto")
 
     def edit_caption(self, chat_id: str, message_id: int, html: str, button: tuple[str, str] | None = None) -> None:
         """Change the caption of a photo post. The button must be passed again or Telegram removes it."""
@@ -79,7 +94,7 @@ class TelegramClient:
         """Anonymous regular poll (channels allow only anonymous polls)."""
         payload = {"chat_id": chat_id, "question": question, "options": [{"text": o} for o in options],
                    "is_anonymous": True, "allows_multiple_answers": False}
-        return int(self._call("sendPoll", payload)["message_id"])
+        return _message_id(self._call("sendPoll", payload), "sendPoll")
 
     def stop_poll(self, chat_id: str, message_id: int) -> dict:
         """Close a poll sent by the bot; returns the final Poll with voter_count per option."""
@@ -138,7 +153,12 @@ class TelegraphClient:
         self.short_name, self.author_name, self.author_url = short_name, author_name, author_url
 
     def _call(self, method: str, payload: dict) -> dict:
-        data = self.http.request("POST", f"{self.API}/{method}", json_body=payload, timeout=60)
+        extra = {"retry": False} if method in {"createPage", "createAccount"} else {}
+        try:
+            data = self.http.request("POST", f"{self.API}/{method}", json_body=payload, timeout=60, **extra)
+        except HttpError as exc:
+            raise TelegramError(f"telegraph {method} failed: HTTP {exc.status}",
+                                ambiguous=exc.status >= 500 or exc.status == 408) from None
         if not isinstance(data, dict) or not data.get("ok"):
             raise TelegramError(f"telegraph {method} failed: {data.get('error') if isinstance(data, dict) else data}")
         return data["result"]
