@@ -40,6 +40,22 @@ class FakeTelegram:
     def send_series(self, chat_id, parts, button=None, reply_to=None):
         return [self.send(chat_id, p, reply_to=reply_to if i == 0 else None) for i, p in enumerate(parts)]
 
+    def set_buttons(self, chat_id, mid, rows):
+        self.buttons = getattr(self, "buttons", {})
+        self.buttons[mid] = rows
+
+    def create_invite_link(self, chat_id, name):
+        self.invites = getattr(self, "invites", []) + [name]
+        return f"https://t.me/+inv{len(self.invites)}"
+
+    def member_count(self, chat_id):
+        return getattr(self, "members", 100)
+
+    def get_updates(self, offset, allowed, limit=100):
+        self.updates_calls = getattr(self, "updates_calls", []) + [(offset, allowed)]
+        queue = [u for u in getattr(self, "updates", []) if offset is None or u["update_id"] >= offset]
+        return queue
+
     def delete(self, chat_id, mid):
         self.deleted.append(mid)
         return True
@@ -57,14 +73,33 @@ class FakeTelegram:
 class FakeTelegraph:
     def __init__(self):
         self.pages = []
+        self.by_url = {}
+        self.views = {}
+        self.fail_edit = False
 
     def create_page(self, title, nodes):
         self.pages.append((title, nodes))
-        return f"https://telegra.ph/test-page-{len(self.pages)}" if len(self.pages) > 1 else "https://telegra.ph/test-page"
+        url = f"https://telegra.ph/test-page-{len(self.pages)}" if len(self.pages) > 1 else "https://telegra.ph/test-page"
+        self.by_url[url] = (title, list(nodes))
+        return url
 
     def edit_page(self, url, title, nodes):
+        if self.fail_edit:
+            from investor_agent.telegram import TelegramError
+            raise TelegramError("telegraph editPage failed: test")
         self.edited = getattr(self, "edited", []) + [(url, title, nodes)]
+        self.by_url[url] = (title, list(nodes))
         return url
+
+    def get_page(self, url):
+        title, nodes = self.by_url[url]
+        return {"title": title, "content": nodes}
+
+    def get_views(self, url):
+        if url not in self.views:
+            from investor_agent.telegram import TelegramError
+            raise TelegramError("telegraph getViews failed: PAGE_NOT_FOUND")
+        return self.views[url]
 
     def upload_image(self, data, content_type):
         return "https://telegra.ph/file/test.jpg"

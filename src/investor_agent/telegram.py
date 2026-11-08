@@ -76,6 +76,25 @@ class TelegramClient:
         """Close a poll sent by the bot; returns the final Poll with voter_count per option."""
         return self._call("stopPoll", {"chat_id": chat_id, "message_id": message_id})
 
+    def set_buttons(self, chat_id: str, message_id: int, rows: list[list[tuple[str, str]]]) -> None:
+        """Replace the inline keyboard of a post (rows of (text, url))."""
+        keyboard = [[{"text": t, "url": u} for t, u in row] for row in rows]
+        self._call("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": message_id,
+                                              "reply_markup": {"inline_keyboard": keyboard}})
+
+    def create_invite_link(self, chat_id: str, name: str) -> str:
+        """A separate invite link (its own counter and chat_member.invite_link) for one traffic source."""
+        return self._call("createChatInviteLink", {"chat_id": chat_id, "name": name[:32]})["invite_link"]
+
+    def member_count(self, chat_id: str) -> int:
+        return int(self._call("getChatMemberCount", {"chat_id": chat_id}))
+
+    def get_updates(self, offset: int | None, allowed: list[str], limit: int = 100) -> list[dict]:
+        payload = {"timeout": 0, "limit": limit, "allowed_updates": allowed}
+        if offset is not None:
+            payload["offset"] = offset
+        return self._call("getUpdates", payload)
+
     def delete(self, chat_id: str, message_id: int) -> bool:
         return bool(self._call("deleteMessage", {"chat_id": chat_id, "message_id": message_id}))
 
@@ -135,6 +154,16 @@ class TelegraphClient:
                    "author_name": self.author_name, "author_url": self.author_url,
                    "content": json.dumps(nodes, ensure_ascii=False, separators=(",", ":")), "return_content": False}
         return self._call("editPage", payload)["url"]
+
+    def get_page(self, url: str) -> dict:
+        """Current title and content nodes of a page (used to append blocks without recreating it)."""
+        path = url.rstrip("/").rsplit("/", 1)[-1]
+        return self._call(f"getPage/{path}", {"return_content": True})
+
+    def get_views(self, url: str) -> int:
+        """Total views of a page (official getViews; year/month/day/hour narrow the interval, unused here)."""
+        path = url.rstrip("/").rsplit("/", 1)[-1]
+        return int(self._call(f"getViews/{path}", {})["views"])
 
     def create_page(self, title: str, nodes: list) -> str:
         payload = {"access_token": self._token(), "title": title[:256], "author_name": self.author_name,

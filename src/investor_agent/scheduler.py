@@ -10,6 +10,9 @@ from typing import Callable
 from .app import App
 from .radar import digest as radar_digest
 from .radar import pipeline as radar
+from .growth import collect as growth_collect
+from .growth import publish as growth_publish
+from .growth import report as growth_report
 from .report import send_weekly_report
 from .timeutil import BEIJING, PeakHoursError, is_peak, next_offpeak, now_bj
 from .unicorn import pipeline as unicorn
@@ -24,6 +27,8 @@ UNICORN_RETRY_UNTIL = 22             # no new attempts from 22:00; tomorrow's 04
 UNICORN_PUBLISH_TIME = (10, 0)
 RADAR_DIGEST_TIME = radar_digest.DIGEST_TIME_BEIJING   # 22:00 Moscow
 RADAR_EVERY_HOURS = 3
+GROWTH_DAILY_TIME = (8, 0)   # collect statistics + admin summary (no DeepSeek)
+GROWTH_UPDATES_MINUTES = 5   # chat_member events (Telegram keeps updates 24 h), pending Telegraph share blocks
 WEEKLY_REPORT = (6, 20, 0)   # Sunday 20:00 Beijing
 
 
@@ -80,12 +85,22 @@ class Scheduler:
             Job("radar", lambda: radar.run(app), next_radar),
             Job("radar_digest", lambda: radar_digest.run(app), lambda n: next_daily(n, (RADAR_DIGEST_TIME,)),
                 uses_deepseek=False),
+            Job("growth_updates", self._growth_updates, lambda n: n + timedelta(minutes=GROWTH_UPDATES_MINUTES),
+                uses_deepseek=False),
+            Job("growth_daily", lambda: growth_report.run_daily(app) if app.settings.growth_enabled else "off",
+                lambda n: next_daily(n, (GROWTH_DAILY_TIME,)), uses_deepseek=False),
             Job("weekly_report", lambda: send_weekly_report(app), next_weekly, uses_deepseek=False),
         ]
         now = clock()
         for job in self.jobs:
             job.next_run = job.next_fn(now)
         self._catch_up(now)
+
+    def _growth_updates(self) -> object:
+        if not self.app.settings.growth_enabled:
+            return "off"
+        growth_publish.retry_pending(self.app)
+        return growth_collect.poll_updates(self.app)
 
     def _job(self, name: str) -> Job:
         return next(j for j in self.jobs if j.name == name)

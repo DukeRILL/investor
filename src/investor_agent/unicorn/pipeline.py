@@ -16,6 +16,7 @@ from ..telegram import TelegramError
 from ..textfmt import READING_WPM, reading_line, reading_minutes, table_nodes, text_to_nodes, to_tg_html, visible_len
 from ..timeutil import PeakHoursError, now_bj, ru_date
 from .. import glossary
+from ..growth import publish as growth_publish
 from . import factcheck, poll
 from .precheck import prune_dead_media
 
@@ -602,16 +603,20 @@ def publish(app: App, today: str | None = None) -> str:
     registry = _registry_from(payload["sources"])
     date_str = ru_date(datetime.fromisoformat(today))
     try:
-        if not draft.get("page_url"):
+        url = draft.get("page_url")
+        if not url:
             prune_dead_media(report, app.http)  # dead pictures/videos are dropped just before the page is built
-        url = draft.get("page_url") or create_pages(app.telegraph, *build_page(report, registry, date_str))
+            title, nodes = build_page(report, registry, date_str)
+            url = create_pages(app.telegraph, title, nodes + growth_publish.begin(app, today, report))  # + subscribe CTA
         app.store.draft_mark(today, "ready", page_url=url)
+        growth_publish.page_created(app, today, report, url)  # share block; never raises
         mid = _send_post(app, report, date_str, url)
     except Exception as exc:  # noqa: BLE001
         app.store.draft_mark(today, "ready", error=str(exc)[:500])
         app.notify_admin(f"Школа единорогов: публикация {today} не удалась: {exc}")
         return "failed"
     app.store.draft_mark(today, "published", page_url=url, message_ids=[mid])
+    growth_publish.post_sent(app, today, report, url, mid)  # message id + "Отправить другу" button; never raises
     chosen = payload.get("chosen", {})
     app.store.archive_add(report["company_name"], report.get("industry") or chosen.get("industry", ""),
                           report.get("country") or chosen.get("country", ""), today, url,

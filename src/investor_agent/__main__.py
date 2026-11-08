@@ -21,8 +21,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # httpx INFO logs full URLs, incl. api_key=
     parser = argparse.ArgumentParser(prog="investor_agent")
-    parser.add_argument("command", choices=["prepare", "publish", "poll", "poll-close", "radar", "digest", "glossary", "status"])
+    parser.add_argument("command", choices=["prepare", "publish", "poll", "poll-close", "radar", "digest", "glossary", "status", "growth-daily", "growth-report",
+                                            "growth-updates", "growth-link", "growth-export", "growth-backfill"])
     parser.add_argument("--date", help="issue date YYYY-MM-DD (Beijing) for prepare/publish")
+    parser.add_argument("--source", help="growth-link: instagram|tiktok|youtube|vk|whatsapp|other")
+    parser.add_argument("--out", default="data/export", help="growth-export directory")
     args = parser.parse_args()
     app = build_app(load_settings())
     if args.command == "prepare":
@@ -42,6 +45,26 @@ def main() -> None:
         print(radar_digest.run(app))
     elif args.command == "glossary":
         print(glossary.sync(app))
+    elif args.command.startswith("growth-"):
+        from .growth import collect, report as greport  # noqa: PLC0415
+        from .growth.links import db, make_link  # noqa: PLC0415
+
+        if args.command == "growth-daily":
+            print(greport.run_daily(app))
+        elif args.command == "growth-report":
+            print(greport.build_report(app))
+        elif args.command == "growth-updates":
+            print(json.dumps(collect.poll_updates(app)))
+        elif args.command == "growth-export":
+            print(json.dumps(greport.export(app, args.out)))
+        elif args.command == "growth-backfill":
+            print(greport.backfill(app))
+        else:  # growth-link: an invite link for one external source and one issue; prints the link
+            pub = db(app).publication_by_date(args.date or unicorn.issue_date())
+            if not pub or not args.source:
+                raise SystemExit("need a published --date and --source")
+            link = make_link(app, pub["id"], pub["issue_date"], args.source, "manual")
+            print(link.get("invite_link") or link["target_url"])
     else:
         draft = app.store.draft_get(args.date or unicorn.issue_date())
         print(json.dumps({"publish_mode": app.settings.publish_mode,

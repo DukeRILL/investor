@@ -24,6 +24,14 @@ class Settings(BaseModel):
     cloudinary_cloud_name: str = ""
     cloudinary_api_key: str = ""
     cloudinary_api_secret: str = ""
+    # growth statistics (docs/GROWTH.md)
+    growth_enabled: bool = True
+    public_base_url: str = ""  # public HTTPS origin of this app; only then clicks go through /go/<code>
+    tgstat_api_token: str = ""
+    tgstat_channel_id: str = ""  # default: TELEGRAM_CHAT_ID
+    tgstat_monthly_limit: int = 50  # STAT API FREE
+    tgstat_reserve: int = 5  # requests never spent automatically
+    tgstat_access_until: str = "2026-12-07"
     database_path: Path = Path("data/investor.sqlite3")
     prompts_dir: Path = PROJECT_ROOT / "prompts"
     radar_config_path: Path = PROJECT_ROOT / "config" / "radar.yaml"
@@ -70,6 +78,8 @@ def load_settings(env_file: Path | str = ".env") -> Settings:
             merged[new] = merged[old]
     fields = Settings.model_fields
     data = {name: merged[name.upper()] for name in fields if name.upper() in merged and merged[name.upper()] != ""}
+    if "growth_enabled" in data:
+        data["growth_enabled"] = str(data["growth_enabled"]).lower() in {"1", "true", "yes"}
     if "scheduler_enabled" in data:
         data["scheduler_enabled"] = str(data["scheduler_enabled"]).lower() in {"1", "true", "yes"}
     return Settings(**data)
