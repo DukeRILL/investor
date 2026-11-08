@@ -94,6 +94,9 @@ class FakeTelegraph:
         self.by_url[url] = (title, list(nodes))
         return url
 
+    def find_page(self, title):
+        return next((u for u, (t, _) in self.by_url.items() if t == title), None)
+
     def get_page(self, url):
         title, nodes = self.by_url[url]
         return {"title": title, "content": nodes}

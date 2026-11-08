@@ -424,3 +424,20 @@ def test_click_cap_holds_under_parallel_requests(make_app):
     with ThreadPoolExecutor(8) as pool:
         list(pool.map(lambda i: db(app).add_traffic(link["id"], "click", f"k{i}", daily_cap=5), range(40)))
     assert db(app).traffic_counts()[("telegraph", "click")] == 5
+
+
+def test_crash_after_page_creation_reuses_the_page(make_app):
+    app = prepared_app(make_app)
+    real = app.store.draft_mark
+
+    def boom(*a, **k):
+        app.store.draft_mark = real
+        raise Crash()
+    app.store.draft_mark = boom
+    with pytest.raises(Crash):
+        unicorn.publish(app, DAY)
+    assert len(app.telegraph.pages) == 1 and not app.store.draft_get(DAY).get("page_url")
+    assert unicorn.publish(app, DAY) == "published"
+    assert len(app.telegraph.pages) == 1  # found by title, not created again
+    assert app.store.draft_get(DAY)["page_url"] == "https://telegra.ph/test-page"
+    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Подписаться на Школу единорогов") == 1

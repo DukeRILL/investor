@@ -158,6 +158,14 @@ class TelegraphClient:
                    "content": json.dumps(nodes, ensure_ascii=False, separators=(",", ":")), "return_content": False}
         return self._call("editPage", payload)["url"]
 
+    def find_page(self, title: str) -> str | None:
+        """URL of a recent page of this account with exactly this title (recovers a page created just before a crash)."""
+        result = self._call("getPageList", {"access_token": self._token(), "limit": 20})
+        for page in result.get("pages", []):
+            if page.get("title") == title[:256]:
+                return page["url"]
+        return None
+
     def get_page(self, url: str) -> dict:
         """Current title and content nodes of a page (used to append blocks without recreating it)."""
         path = url.rstrip("/").rsplit("/", 1)[-1]

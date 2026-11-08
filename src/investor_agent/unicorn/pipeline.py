@@ -613,8 +613,17 @@ def publish(app: App, today: str | None = None) -> str:
         if not url:
             prune_dead_media(report, app.http)  # dead pictures/videos are dropped just before the page is built
             title, nodes = build_page(report, registry, date_str)
-            url = create_pages(app.telegraph, title, nodes + growth_publish.begin(app, today, report))  # + subscribe CTA
+            page_intent = f"unicorn_page_intent:{today}"
+            if app.store.get(page_intent) == "creating":  # a crash after createPage, before page_url was saved
+                try:
+                    url = app.telegraph.find_page(title)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("page lookup failed: %s", exc)
+            if not url:
+                app.store.set(page_intent, "creating")
+                url = create_pages(app.telegraph, title, nodes + growth_publish.begin(app, today, report))  # + CTA
         app.store.draft_mark(today, "ready", page_url=url)
+        app.store.set(f"unicorn_page_intent:{today}", "")
         growth_publish.page_created(app, today, report, url)  # share block; never raises
         app.store.set(intent, "sending")
         mid = _send_post(app, report, date_str, url)
