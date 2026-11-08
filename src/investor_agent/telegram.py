@@ -9,7 +9,12 @@ log = logging.getLogger(__name__)
 
 
 class TelegramError(RuntimeError):
-    pass
+    """ambiguous=True: the request may have been executed (timeout, connection lost, 5xx) - the caller must not
+    assume 'not delivered'. A Telegram answer ok=false or HTTP 4xx is a definite failure."""
+
+    def __init__(self, message: str = "", ambiguous: bool = False):
+        super().__init__(message)
+        self.ambiguous = ambiguous
 
 
 class TelegramClient:
@@ -23,7 +28,11 @@ class TelegramClient:
             data = self.http.request("POST", f"https://api.telegram.org/bot{self._token}/{method}",
                                      json_body=payload, timeout=60)
         except HttpError as exc:  # strip URL with token from the message
-            raise TelegramError(f"{method} failed: HTTP {exc.status}") from None
+            raise TelegramError(f"{method} failed: HTTP {exc.status}", ambiguous=exc.status >= 500) from None
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, (OSError, TimeoutError)) or type(exc).__module__.startswith("httpx"):
+                raise TelegramError(f"{method} failed: {type(exc).__name__}", ambiguous=True) from None
+            raise
         if not isinstance(data, dict) or not data.get("ok"):
             desc = data.get("description") if isinstance(data, dict) else "bad response"
             raise TelegramError(f"{method} failed: {desc}")
@@ -159,12 +168,14 @@ class TelegraphClient:
         return self._call("editPage", payload)["url"]
 
     def find_page(self, title: str) -> str | None:
-        """URL of a recent page of this account with exactly this title (recovers a page created just before a crash)."""
-        result = self._call("getPageList", {"access_token": self._token(), "limit": 20})
-        for page in result.get("pages", []):
-            if page.get("title") == title[:256]:
-                return page["url"]
-        return None
+        """URL of the page of this account with exactly this title (recovers a page created just before a crash).
+        None = looked and there is none. Several pages with that title (or a failed lookup) raise: the caller must
+        not create another page then."""
+        result = self._call("getPageList", {"access_token": self._token(), "limit": 200})
+        found = [p["url"] for p in result.get("pages", []) if p.get("title") == title[:256]]
+        if len(found) > 1:
+            raise TelegramError(f"telegraph: {len(found)} pages share the title, reconcile by hand")
+        return found[0] if found else None
 
     def get_page(self, url: str) -> dict:
         """Current title and content nodes of a page (used to append blocks without recreating it)."""

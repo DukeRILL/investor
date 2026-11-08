@@ -95,7 +95,14 @@ class FakeTelegraph:
         return url
 
     def find_page(self, title):
-        return next((u for u, (t, _) in self.by_url.items() if t == title), None)
+        if getattr(self, "fail_lookup", False):
+            from investor_agent.telegram import TelegramError
+            raise TelegramError("telegraph getPageList failed: test")
+        found = [u for u, (t, _) in self.by_url.items() if t == title]
+        if len(found) > 1:
+            from investor_agent.telegram import TelegramError
+            raise TelegramError("several pages share the title")
+        return found[0] if found else None
 
     def get_page(self, url):
         title, nodes = self.by_url[url]

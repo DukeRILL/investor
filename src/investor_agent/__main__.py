@@ -22,8 +22,10 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)  # httpx INFO logs full URLs, incl. api_key=
     parser = argparse.ArgumentParser(prog="investor_agent")
     parser.add_argument("command", choices=["prepare", "publish", "poll", "poll-close", "radar", "digest", "glossary", "status", "growth-daily", "growth-report",
-                                            "growth-updates", "growth-link", "growth-export", "growth-backfill"])
+                                            "growth-updates", "growth-link", "growth-export", "growth-backfill", "reconcile"])
     parser.add_argument("--date", help="issue date YYYY-MM-DD (Beijing) for prepare/publish")
+    parser.add_argument("--message-id", type=int, help="reconcile: id of the issue post that is in the channel")
+    parser.add_argument("--not-sent", action="store_true", help="reconcile: the post is not in the channel")
     parser.add_argument("--source", help="growth-link: instagram|tiktok|youtube|vk|whatsapp|other")
     parser.add_argument("--out", default="data/export", help="growth-export directory")
     args = parser.parse_args()
@@ -45,6 +47,8 @@ def main() -> None:
         print(radar_digest.run(app))
     elif args.command == "glossary":
         print(glossary.sync(app))
+    elif args.command == "reconcile":
+        print(unicorn.reconcile(app, args.date or unicorn.issue_date(), args.message_id, args.not_sent))
     elif args.command.startswith("growth-"):
         from .growth import collect, report as greport  # noqa: PLC0415
         from .growth.links import db, make_link  # noqa: PLC0415

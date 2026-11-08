@@ -393,19 +393,6 @@ def prepared_app(make_app):
     return app
 
 
-def test_crash_while_sending_the_post_never_sends_it_twice(make_app):
-    app = prepared_app(make_app)
-    real = app.telegram.send_photo
-    app.telegram.send_photo = app.telegram.send = lambda *a, **k: (_ for _ in ()).throw(Crash())
-    with pytest.raises(Crash):
-        unicorn.publish(app, DAY)
-    app.telegram.send_photo, app.telegram.send = real, FakeTelegram.send.__get__(app.telegram)
-    assert unicorn.publish(app, DAY) == "unknown_sent"
-    assert not any("Компания дня" in m.get("html", "") for m in app.telegram.sent)
-    assert app.store.draft_get(DAY)["status"] == "published" and "Проверьте канал" in app.telegram.sent[-1]["html"]
-    assert unicorn.publish(app, DAY) == "already_published"
-
-
 def test_failed_send_is_retried_and_page_is_reused(make_app):
     app = prepared_app(make_app)
     app.telegram.fail = True
@@ -426,8 +413,100 @@ def test_click_cap_holds_under_parallel_requests(make_app):
     assert db(app).traffic_counts()[("telegraph", "click")] == 5
 
 
-def test_crash_after_page_creation_reuses_the_page(make_app):
+from investor_agent.telegram import TelegramError, TelegraphClient
+
+
+def posts(app):
+    return [m for m in app.telegram.sent if "Компания дня" in m.get("html", "")]
+
+
+def boom_send(app, exc):
+    def f(*a, **k):
+        raise exc
+    app.telegram.send = app.telegram.send_photo = f
+
+
+def restore_send(app):
+    for name in ("send", "send_photo"):
+        app.telegram.__dict__.pop(name, None)
+
+
+def test_crash_after_sent_state_resumes_without_a_second_post(make_app, monkeypatch):
+    """1. crash after 'sent:<id>' was written, before draft_mark(published)."""
     app = prepared_app(make_app)
+    monkeypatch.setattr(unicorn.growth_publish, "post_sent", lambda *a: (_ for _ in ()).throw(Crash()))
+    with pytest.raises(Crash):
+        unicorn.publish(app, DAY)
+    assert len(posts(app)) == 1 and app.store.draft_get(DAY)["status"] == "ready"
+    monkeypatch.undo()
+    assert unicorn.publish(app, DAY) == "published"
+    assert len(posts(app)) == 1  # no second post
+    assert app.store.draft_get(DAY)["message_ids"] in ([1], "[1]") and "acme" in app.store.archived_names()
+    assert db(app).publication_by_date(DAY)["telegram_message_id"] == 1
+    assert any("question" in m for m in app.telegram.sent)  # the readers' poll was not skipped
+
+
+def test_timeout_after_delivery_is_not_retried_automatically(make_app):
+    """2. ambiguous failure (timeout/5xx): no resend, not 'published', explicit manual state."""
+    app = prepared_app(make_app)
+    told = []
+    app.notify_admin = told.append
+    boom_send(app, TelegramError("sendPhoto failed: ReadTimeout", ambiguous=True))
+    assert unicorn.publish(app, DAY) == "requires_manual_reconcile"
+    restore_send(app)
+    assert unicorn.publish(app, DAY) == "requires_manual_reconcile"  # still no automatic retry
+    assert not posts(app) and app.store.draft_get(DAY)["status"] == "ready"
+    assert len(told) == 1 and "reconcile --date" in told[0]
+    assert unicorn.reconcile(app, DAY, message_id=77) == "published"  # the owner saw post 77 in the channel
+    d = app.store.draft_get(DAY)
+    assert d["status"] == "published" and d["message_ids"] in ([77], "[77]") and "acme" in app.store.archived_names()
+    assert db(app).publication_by_date(DAY)["telegram_message_id"] == 77 and not posts(app)
+    assert unicorn.publish(app, DAY) == "already_published"
+
+
+def test_ambiguous_photo_failure_does_not_fall_back_to_a_text_post(make_app, monkeypatch):
+    app = prepared_app(make_app)
+    monkeypatch.setattr(unicorn, "hero_photo", lambda report: {"src": "https://example.com/p.jpg"})
+    app.telegram.send_photo = lambda *a, **k: (_ for _ in ()).throw(TelegramError("x", ambiguous=True))
+    unicorn.publish(app, DAY)
+    assert not posts(app)  # the text fallback would have been a duplicate
+
+
+def test_definite_refusal_is_retried(make_app):
+    app = prepared_app(make_app)
+    boom_send(app, TelegramError("sendMessage failed: chat not found"))
+    assert unicorn.publish(app, DAY) == "failed"
+    restore_send(app)
+    assert unicorn.publish(app, DAY) == "published" and len(posts(app)) == 1
+
+
+def test_crash_before_the_telegram_call_is_not_published(make_app):
+    """3. crash after intent=sending but before Telegram: not 'published', no downstream steps, owner decides."""
+    app = prepared_app(make_app)
+    boom_send(app, Crash())
+    with pytest.raises(Crash):
+        unicorn.publish(app, DAY)
+    restore_send(app)
+    assert unicorn.publish(app, DAY) == "requires_manual_reconcile"
+    d = app.store.draft_get(DAY)
+    assert d["status"] == "ready" and "acme" not in app.store.archived_names() and not posts(app)
+    assert not any("question" in m for m in app.telegram.sent)
+    assert unicorn.reconcile(app, DAY, not_sent=True) == "cleared"
+    assert unicorn.publish(app, DAY) == "published" and len(posts(app)) == 1
+    assert "acme" in app.store.archived_names()
+
+
+def test_reconcile_needs_exactly_one_choice_and_a_pending_state(make_app):
+    app = prepared_app(make_app)
+    assert unicorn.reconcile(app, DAY, message_id=1) == "nothing_to_reconcile"
+    app.store.set(unicorn._state_key(DAY), unicorn.MANUAL)
+    with pytest.raises(ValueError):
+        unicorn.reconcile(app, DAY)
+    with pytest.raises(ValueError):
+        unicorn.reconcile(app, DAY, message_id=1, not_sent=True)
+
+
+def crash_after_page(app):
     real = app.store.draft_mark
 
     def boom(*a, **k):
@@ -437,7 +516,67 @@ def test_crash_after_page_creation_reuses_the_page(make_app):
     with pytest.raises(Crash):
         unicorn.publish(app, DAY)
     assert len(app.telegraph.pages) == 1 and not app.store.draft_get(DAY).get("page_url")
+
+
+def test_crash_after_page_creation_reuses_the_page(make_app):
+    app = prepared_app(make_app)
+    crash_after_page(app)
     assert unicorn.publish(app, DAY) == "published"
-    assert len(app.telegraph.pages) == 1  # found by title, not created again
+    assert len(app.telegraph.pages) == 1
     assert app.store.draft_get(DAY)["page_url"] == "https://telegra.ph/test-page"
     assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Подписаться на Школу единорогов") == 1
+
+
+def test_failed_page_lookup_never_creates_a_second_page(make_app):
+    """4. getPageList fails while recovering: no createPage, a clear failure, recovery on the next run."""
+    app = prepared_app(make_app)
+    crash_after_page(app)
+    app.telegraph.fail_lookup = True
+    assert unicorn.publish(app, DAY) == "failed"
+    assert len(app.telegraph.pages) == 1 and not posts(app)
+    app.telegraph.fail_lookup = False
+    assert unicorn.publish(app, DAY) == "published" and len(app.telegraph.pages) == 1
+
+
+def test_same_title_collision_is_refused_not_guessed(make_app):
+    """5. two pages with the title: unsafe to pick one, unsafe to create another."""
+    app = prepared_app(make_app)
+    crash_after_page(app)
+    title = app.telegraph.pages[0][0]
+    app.telegraph.create_page(title, [{"tag": "p", "children": ["older orphan"]}])
+    assert unicorn.publish(app, DAY) == "failed"
+    assert len(app.telegraph.pages) == 2 and not posts(app)
+
+
+class ListHttp:
+    def __init__(self, pages):
+        self.pages = pages
+
+    def request(self, method, url, json_body=None, **kw):
+        assert url.endswith("/getPageList") and json_body["limit"] == 200
+        return {"ok": True, "result": {"pages": self.pages}}
+
+
+def test_telegraph_find_page_exact_title_unique_only():
+    mk = lambda pages: TelegraphClient(ListHttp(pages), lambda: "tok", lambda t: None)
+    page = lambda t, u: {"title": t, "url": u}
+    assert mk([page("A", "u1"), page("B", "u2")]).find_page("B") == "u2"
+    assert mk([page("A", "u1")]).find_page("B") is None
+    with pytest.raises(TelegramError):
+        mk([page("B", "u1"), page("B", "u2")]).find_page("B")
+
+
+def test_network_errors_are_marked_ambiguous_and_4xx_are_not():
+    from investor_agent.telegram import TelegramClient
+
+    class H:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def request(self, *a, **k):
+            raise self.exc
+    for exc, ambiguous in ((HttpError(502, "bad"), True), (HttpError(599, "retries"), True), (TimeoutError(), True),
+                           (HttpError(400, "bad"), False), (HttpError(429, "flood"), False)):
+        with pytest.raises(TelegramError) as info:
+            TelegramClient(H(exc), "tok").send("@c", "x")
+        assert info.value.ambiguous is ambiguous and "tok" not in str(info.value)

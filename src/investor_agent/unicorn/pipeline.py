@@ -575,6 +575,8 @@ def _send_post(app: App, report: dict, date_str: str, url: str) -> int:
         try:
             return app.telegram.send_photo(app.target_chat(), hero["src"], html, button=button)
         except TelegramError as exc:
+            if exc.ambiguous:  # the photo may have been delivered: a text fallback could make a second post
+                raise
             log.warning("photo post failed (%s); sending text", exc)
     return app.telegram.send(app.target_chat(), html, button=button)
 
@@ -602,12 +604,13 @@ def publish(app: App, today: str | None = None) -> str:
     report = payload["report"]
     registry = _registry_from(payload["sources"])
     date_str = ru_date(datetime.fromisoformat(today))
-    intent = f"unicorn_post_intent:{today}"
-    if app.store.get(intent) == "sending":  # a crash between sending the post and recording it: never send twice
-        app.store.draft_mark(today, "published", page_url=draft.get("page_url"), message_ids=[])
-        app.notify_admin(f"Школа единорогов: процесс оборвался при отправке поста {today}. Пост мог уйти в канал, "
-                         "повторно не отправляю. Проверьте канал.")
-        return "unknown_sent"
+    skey = _state_key(today)
+    state = app.store.get(skey) or ""
+    if state == MANUAL:
+        return MANUAL  # waiting for `reconcile`; nothing is retried automatically
+    if state == "sending":  # a crash between the intent and the result: delivery is unknown
+        _to_manual(app, today, "процесс оборвался при отправке поста")
+        return MANUAL
     try:
         url = draft.get("page_url")
         if not url:
@@ -615,25 +618,50 @@ def publish(app: App, today: str | None = None) -> str:
             title, nodes = build_page(report, registry, date_str)
             page_intent = f"unicorn_page_intent:{today}"
             if app.store.get(page_intent) == "creating":  # a crash after createPage, before page_url was saved
-                try:
-                    url = app.telegraph.find_page(title)
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("page lookup failed: %s", exc)
+                url = app.telegraph.find_page(title)  # a failed or ambiguous lookup raises: never create a 2nd page
             if not url:
                 app.store.set(page_intent, "creating")
                 url = create_pages(app.telegraph, title, nodes + growth_publish.begin(app, today, report))  # + CTA
         app.store.draft_mark(today, "ready", page_url=url)
         app.store.set(f"unicorn_page_intent:{today}", "")
         growth_publish.page_created(app, today, report, url)  # share block; never raises
-        app.store.set(intent, "sending")
-        mid = _send_post(app, report, date_str, url)
-        app.store.set(intent, "sent")
+        if state.startswith("sent:"):
+            mid = int(state.split(":", 1)[1])  # the post is already in the channel: only finish
+        else:
+            app.store.set(skey, "sending")
+            try:
+                mid = _send_post(app, report, date_str, url)
+            except TelegramError as exc:
+                if exc.ambiguous:  # may have been delivered: do not resend, do not call it published
+                    _to_manual(app, today, f"ответ Telegram не получен ({exc})")
+                    return MANUAL
+                app.store.set(skey, "")  # a definite refusal: a retry may send
+                raise
+            app.store.set(skey, f"sent:{mid}")
     except Exception as exc:  # noqa: BLE001
-        app.store.set(intent, "")  # the call failed (not a crash): a retry may send
         app.store.draft_mark(today, "ready", error=str(exc)[:500])
         app.notify_admin(f"Школа единорогов: публикация {today} не удалась: {exc}")
         return "failed"
-    app.store.draft_mark(today, "published", page_url=url, message_ids=[mid])
+    return _complete(app, today, report, payload, url, mid)
+
+
+MANUAL = "requires_manual_reconcile"
+
+
+def _state_key(today: str) -> str:
+    return f"unicorn_publish_state:{today}"
+
+
+def _to_manual(app: App, today: str, reason: str) -> None:
+    app.store.set(_state_key(today), MANUAL)
+    app.notify_admin(f"Школа единорогов: выпуск {today} — {reason}. Неизвестно, ушёл ли пост в канал; автоматически "
+                     f"не повторяю. Проверьте канал и выполните: python -m investor_agent reconcile --date {today} "
+                     "--message-id <id поста> (пост есть) или --not-sent (поста нет).")
+
+
+def _complete(app: App, today: str, report: dict, payload: dict, url: str, mid: int) -> str:
+    """Everything after a delivered post. Every step is idempotent (archive upsert, poll guarded by its key, buttons
+    re-set, glossary terms deduplicated), 'published' is written last, so a crash anywhere resumes here."""
     growth_publish.post_sent(app, today, report, url, mid)  # message id + "Отправить другу" button; never raises
     chosen = payload.get("chosen", {})
     app.store.archive_add(report["company_name"], report.get("industry") or chosen.get("industry", ""),
@@ -642,4 +670,20 @@ def publish(app: App, today: str | None = None) -> str:
     tomorrow = poll.next_issue(today)  # readers vote on the topic of the next issue right after this one
     poll.post(app, tomorrow, payload.get("poll_options") or poll.make_options(app, tomorrow))
     _grow_glossary(app, report)  # after the poll: the issue post and the poll keep their places in the channel
+    app.store.draft_mark(today, "published", page_url=url, message_ids=[mid])
+    app.store.set(_state_key(today), "")
     return "published"
+
+
+def reconcile(app: App, today: str, message_id: int | None = None, not_sent: bool = False) -> str:
+    """Continue after the owner has looked at the channel. message_id: the post is there, finish the issue with that
+    id. not_sent: it is not there, the next publish may send it."""
+    if app.store.get(_state_key(today)) != MANUAL:
+        return "nothing_to_reconcile"
+    if bool(message_id) == bool(not_sent):
+        raise ValueError("give exactly one of --message-id and --not-sent")
+    if not_sent:
+        app.store.set(_state_key(today), "")
+        return "cleared"
+    app.store.set(_state_key(today), f"sent:{int(message_id)}")
+    return publish(app, today)
