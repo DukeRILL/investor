@@ -317,3 +317,11 @@ def test_shot_rules_from_owner_review():
            {"start": 7, "end": 9, "image_id": "img02", "source_type": "original"}]
     errs = " ".join(P.shot_problems(bad, cat))
     assert "первый кадр" in errs and "дольше 4" in errs and "штамп" in errs and "подряд" in errs
+
+
+def test_library_rules_unique_images_and_logo_gap():
+    lib = {"img02": {"kind": "founder"}, "img01": {"kind": "brand"}, "gen01": {"kind": "generated"}, "gen02": {"kind": "generated"}}
+    sh = lambda ids: [{"start": i * 3, "end": i * 3 + 3, "image_id": x} for i, x in enumerate(ids)]
+    assert P.library_shot_problems(sh(["img02", "gen01", "img01", "gen02"]), lib) == []
+    errs = " ".join(P.library_shot_problems(sh(["gen01", "img02", "img02", "img01", "gen02", "img01"]), lib))
+    assert "первый кадр" in errs and "уже был" in errs and "логотип ближе" in errs

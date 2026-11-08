@@ -177,3 +177,33 @@ def shot_problems(shots: list[dict], catalog: dict[str, dict]) -> list[str]:
         elif s.get("image_id") not in catalog:
             errs.append(f"кадр {i + 1}: нет изображения {s.get('image_id')}")
     return errs
+
+
+LOGO_GAP = 7
+
+
+def library_shot_problems(shots: list[dict], library: dict[str, dict]) -> list[str]:
+    """Правила подбора кадров из библиотеки (ревью Ильи 2026-11-08, оценка 2/10)."""
+    errs = []
+    if shots and library.get(shots[0].get("image_id"), {}).get("kind") != "founder":
+        errs.append("первый кадр должен быть реальным фото основателей")
+    logo_at: list[int] = []
+    seen: dict[str, int] = {}
+    for i, s in enumerate(shots):
+        img = s.get("image_id")
+        item = library.get(img)
+        if item is None:
+            errs.append(f"кадр {i + 1}: нет в библиотеке {img}")
+            continue
+        if s["end"] - s["start"] > MAX_SHOT:
+            errs.append(f"кадр {i + 1}: дольше 4 секунд")
+        if item.get("kind") == "brand":
+            if logo_at and i - logo_at[-1] < LOGO_GAP:
+                errs.append(f"кадр {i + 1}: логотип ближе {LOGO_GAP} кадров к прошлому")
+            logo_at.append(i)
+        elif img in seen:
+            errs.append(f"кадр {i + 1}: {img} уже был в кадре {seen[img] + 1}")
+        seen.setdefault(img, i)
+    if len(logo_at) > 2:
+        errs.append("логотип больше 2 раз")
+    return errs
