@@ -42,6 +42,15 @@ def call_deepseek(system: str, user: str) -> dict:
     return json.loads(r.json()["choices"][0]["message"]["content"])
 
 
+def check_scenario(sc: dict, article: str, ids: set[str]) -> list[str]:
+    """Проверки сценария + обязательный хук (правило владельца): плохой хук останавливает запуск до озвучки."""
+    errs = P.validate_scenario(sc, article, ids)
+    scenes = sc.get("scenes") or []
+    if scenes:
+        errs += P.hook_problems({"hook": sc.get("hook"), "lines": [{"voice": x.get("voice"), "on_screen": x.get("on_screen")} for x in scenes]})
+    return errs
+
+
 def write_scenarios(system: str, article: str, images: list[dict], ids: set[str], ask=call_deepseek) -> tuple[dict, int]:
     """Запрашивает 4 сценария. При ошибках просит переписать только плохие, не больше MAX_CALLS запросов."""
     user = "ARTICLE:\n" + article[:14000] + "\n\nIMAGE_CATALOG:\n" + json.dumps(images, ensure_ascii=False)
@@ -50,7 +59,7 @@ def write_scenarios(system: str, article: str, images: list[dict], ids: set[str]
     items = res.get("scenarios") or []
     while True:
         items = (items + [{}] * 4)[:4]
-        bad = {i: P.validate_scenario(s, article, ids) for i, s in enumerate(items)}
+        bad = {i: check_scenario(s, article, ids) for i, s in enumerate(items)}
         bad = {i: e for i, e in bad.items() if e}
         if not bad or calls >= MAX_CALLS:
             break
@@ -64,7 +73,7 @@ def write_scenarios(system: str, article: str, images: list[dict], ids: set[str]
                 items[i] = fresh[i]
     for i, s in enumerate(items):
         s["hypothesis"] = P.HYPOTHESES[i]
-        s["problems"] = P.validate_scenario(s, article, ids)
+        s["problems"] = check_scenario(s, article, ids)
     res["scenarios"] = items
     return res, calls
 

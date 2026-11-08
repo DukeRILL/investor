@@ -33,7 +33,7 @@ def scenario(**kw):
     scenes += [{"voice": VOICE, "on_screen": "заявки", "big_number": None, "image_id": f"img0{i + 2}", "effect": "pan_left",
                 "source_quote": "заявки закрываются вручную неделями"} for i in range(4)]
     scenes += [{"voice": "", "image_id": "img01", "effect": "parallax"}]
-    return {"scenes": scenes, **kw}
+    return {"hook": {"type": "number", "why": "x"}, "scenes": scenes, **kw}
 
 
 IDS = {f"img0{i}" for i in range(1, 7)}
@@ -476,3 +476,10 @@ def test_hook_is_mandatory():
     assert P.hook_problems(good) == []
     errs = " ".join(P.hook_problems({"lines": [{"voice": "Привет, сегодня расскажу про компанию Whop, которая выросла за пять лет в огромный бизнес", "on_screen": ""}]}))
     assert "слов" in errs and "приветствием" in errs and "нет поля hook" in errs and "экранной" in errs
+
+
+def test_scenario_without_valid_hook_is_rejected_before_voice():
+    import app as A
+    sc = {"scenes": [{"voice": "Привет, друзья, сегодня расскажем про компанию.", "on_screen": ""}] * 6}
+    errs = A.check_scenario(sc, "текст", set())
+    assert any("хук" in e or "hook" in e for e in errs)
