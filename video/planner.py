@@ -326,7 +326,8 @@ def fill_gaps(videos: list[list[dict]], library: dict[str, dict], used: dict[str
 
 
 HOOK_TYPES = {"number", "paradox", "question", "contrast"}
-HOOK_MAX_WORDS = 9
+HOOK_MAX_WORDS = 14  # мастер-промт хуков: 7–14 слов (правило Ильи 2026-11-08, заменило прежние 9)
+HOOK_MIN_WORDS = 7
 BAD_OPENINGS = re.compile(r"^(привет|друзья|сегодня расскажу|давайте|в этом видео|компания )", re.I)
 
 
@@ -347,4 +348,48 @@ def hook_problems(script: dict) -> list[str]:
         errs.append("нет поля hook с типом number, paradox, question или contrast")
     if not (first.get("on_screen") or "").strip():
         errs.append("у хука нет экранной надписи")
+    return errs
+
+
+HOOK_CATEGORIES = ["VIRAL", "SMART", "EMOTIONAL"]
+
+
+HOOK_BAD = re.compile(r"вы не поверите|это изменило всё|секрет успеха|^(сегодня расскажем|знакомьтесь|история компании)", re.I)
+
+
+def _content_words(t: str) -> set[str]:
+    return {w for w in norm(t).split() if len(w) > 3}
+
+
+def hook_engine_problems(res: dict, article: str) -> list[str]:
+    """Проверка ответа мастер-промта хуков: три финалиста разных механик, 7–14 слов, оценка не ниже 9, опора на статью
+    (числа хука и продолжения есть в статье, fact_basis пересказывает текст статьи), победитель среди финалистов.
+    Цифры в хуке допустимы: слова для озвучки получаются на этапе сценария (voice_problems проверяет уже его)."""
+    errs: list[str] = []
+    hooks = res.get("hooks") or []
+    if [h.get("category") for h in hooks] != HOOK_CATEGORIES:
+        errs.append("нужны ровно три финалиста: VIRAL, SMART, EMOTIONAL")
+    art, art_words, nums = norm(article), _content_words(article), article_numbers(article)
+    for h in hooks:
+        name, text = h.get("category"), (h.get("hook") or "").strip()
+        n = len(text.split())
+        if not HOOK_MIN_WORDS <= n <= HOOK_MAX_WORDS:
+            errs.append(f"{name}: хук {n} слов, нужно {HOOK_MIN_WORDS}–{HOOK_MAX_WORDS}")
+        if HOOK_BAD.search(text):
+            errs.append(f"{name}: клише или вступление")
+        for d in re.findall(r"\d[\d.,]*", text + " " + (h.get("next_line") or "")):
+            if not number_ok(d.replace(",", ".").rstrip("."), nums):
+                errs.append(f"{name}: числа {d} нет в статье")
+        fb = _content_words(h.get("fact_basis") or "")
+        if not fb or len(fb & art_words) / len(fb) < 0.6:
+            errs.append(f"{name}: fact_basis не опирается на текст статьи")
+        if (h.get("score") or 0) < 9:
+            errs.append(f"{name}: оценка {h.get('score')} ниже 9")
+        if not (h.get("next_line") or "").strip() or not (h.get("visual") or "").strip():
+            errs.append(f"{name}: нет next_line или visual")
+    win = (res.get("winner") or {}).get("hook")
+    if win not in [h.get("hook") for h in hooks]:
+        errs.append("winner не совпадает ни с одним финалистом")
+    if len({h.get("hook") for h in hooks}) < len(hooks):
+        errs.append("повторяющиеся хуки")
     return errs

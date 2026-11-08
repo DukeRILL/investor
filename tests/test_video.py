@@ -474,7 +474,7 @@ def test_fill_gaps_uses_spares_then_second_founder_crop():
 def test_hook_is_mandatory():
     good = {"hook": {"type": "number"}, "lines": [{"voice": "Подростки писали ботов. Теперь их компания стоит миллиарды.", "on_screen": "$5,1 млрд"}]}
     assert P.hook_problems(good) == []
-    errs = " ".join(P.hook_problems({"lines": [{"voice": "Привет, сегодня расскажу про компанию Whop, которая выросла за пять лет в огромный бизнес", "on_screen": ""}]}))
+    errs = " ".join(P.hook_problems({"lines": [{"voice": "Привет, сегодня расскажу про компанию Whop, которая выросла за пять лет в огромный и очень прибыльный бизнес", "on_screen": ""}]}))
     assert "слов" in errs and "приветствием" in errs and "нет поля hook" in errs and "экранной" in errs
 
 
@@ -520,3 +520,17 @@ def test_subtitles_show_brands_and_names_in_latin_but_keep_russian_companies():
 def test_old_looking_queries_are_banned():
     assert P.clean_queries(["old computer desk", "vintage sneaker", "black and white alley", "dusty office desk", "CRT television",
                             "modern open office", "wireless headphones on table"]) == ["modern open office", "wireless headphones on table"]
+
+
+def test_hook_engine_response_is_checked():
+    art = "Основатели познакомились в тринадцать лет в группе реселлеров кроссовок. Продавцы теряли деньги из-за посредников."
+    h = lambda c, t, fb: {"category": c, "hook": t, "next_line": "Дальше", "score": 9.3, "fact_basis": fb, "visual": "кадр"}
+    good = {"hooks": [h("VIRAL", "Двое подростков писали ботов для кроссовок и ни разу не думали о миллиардах", "познакомились в тринадцать лет в группе реселлеров кроссовок"),
+                      h("SMART", "Почему продавцы платили посредникам за то, что можно автоматизировать полностью", "Продавцы теряли деньги из-за посредников"),
+                      h("EMOTIONAL", "Они сами были теми, кого обманывали посредники на форумах кроссовок и софта", "Продавцы теряли деньги из-за посредников")]}
+    good["winner"] = {"hook": good["hooks"][0]["hook"]}
+    assert P.hook_engine_problems(good, art) == []
+    bad = {"hooks": [h("VIRAL", "Вы не поверите что произошло", "выдуманный факт про 500 миллионов в подвале"), h("SMART", "Короткий", "x"), h("VIRAL", "Второй", "y")],
+           "winner": {"hook": "другой"}}
+    errs = " ".join(P.hook_engine_problems(bad, art))
+    assert "VIRAL, SMART, EMOTIONAL" in errs and "слов" in errs and "клише" in errs and "fact_basis" in errs and "winner" in errs
