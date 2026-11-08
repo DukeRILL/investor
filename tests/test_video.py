@@ -445,3 +445,17 @@ def test_flux_image_quality_gate():
     b = BytesIO(); im = Image.new("RGB", (600, 600))
     im.putdata([(random.randint(0, 255),) * 3 for _ in range(360000)]); im.save(b, "PNG")
     assert A.image_problem(b.getvalue()) is None
+
+
+def test_assemble_leaves_gaps_when_not_filling():
+    lib = {"img02": {"kind": "founder"}, "img01": {"kind": "brand"}, "gen1": {"kind": "generated"}}
+    lines = [{"line": "T0", "start": 0, "end": 8}, {"line": "CTA", "start": 8, "end": 11}]
+    shots = P.assemble_shots(lines, {"T0": ["gen1"]}, lib, {}, fill_spare=False)
+    assert [s["image_id"] for s in shots] == ["img02", "gen1", "img01"][:0] + [s["image_id"] for s in shots]
+    assert shots[0]["image_id"] == "img02" and shots[1]["image_id"] == "gen1" and shots[-1]["image_id"] == "img01"
+
+
+def test_clean_queries_drops_metaphors_and_text_objects():
+    got = P.clean_queries(["toolbox on wooden table", "open padlock on wooden table", "coin stack on wooden surface",
+                           "empty wooden store shelf", "laptop on desk", "automatic sliding gate", "x"])
+    assert got == ["open padlock on wooden table", "empty wooden store shelf", "automatic sliding gate"]

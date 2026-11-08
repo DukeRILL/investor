@@ -224,7 +224,7 @@ def split_library(generated: list[dict], scripts: list[dict]) -> list[list[str]]
 
 
 def assemble_shots(lines: list[dict], matches: dict[str, list[str]], library: dict[str, dict],
-                   used_elsewhere: dict[str, int], max_videos: int = 2) -> list[dict]:
+                   used_elsewhere: dict[str, int], max_videos: int = 2, fill_spare: bool = True) -> list[dict]:
     """Раскладывает кадры по правилам владельца; модель только подсказывает подходящие картинки.
 
     Кадр не длиннее 4 с, каждая картинка один раз, первый кадр — основатели, логотип только в финале (так он
@@ -256,13 +256,16 @@ def assemble_shots(lines: list[dict], matches: dict[str, list[str]], library: di
         picks = [(c, True) for c in dict.fromkeys(cands) if free(c)][:need]
         for c, _ in picks:
             used.add(c)
-        while len(picks) < need:
+        while fill_spare and len(picks) < need:
             spare = sorted((k for k, v in library.items() if v.get("kind") == "generated" and free(k)),
                            key=lambda k: (used_elsewhere.get(k, 0), k))
             if not spare:
                 break
             used.add(spare[0])
             picks.append((spare[0], False))
+        gaps = need - len(picks)
+        if not fill_spare and gaps > 0:  # пустые места отдаём вызывающему: он добирает картинки (FLUX, потом стоки)
+            picks += [(None, False)] * gaps
         if not picks:
             if shots:
                 shots[-1]["end"] = ln["end"]
@@ -270,5 +273,14 @@ def assemble_shots(lines: list[dict], matches: dict[str, list[str]], library: di
         step = dur / len(picks)
         for i, (img, fit) in enumerate(picks):
             shots.append({"line": ln["line"], "start": round(ln["start"] + i * step, 2), "end": round(ln["start"] + (i + 1) * step, 2),
-                          "image_id": img, "source_type": "generated" if library[img].get("kind") == "generated" else "original", "fit": fit})
+                          "image_id": img, "source_type": "generated" if img and library[img].get("kind") == "generated" else "original", "fit": fit})
     return shots
+
+
+BANNED_QUERY_RE = re.compile(r"toolbox|tool ?belt|wrench|screw|bolt|puzzle|rubik|jigsaw|light ?bulb|rocket|\bcoins?\b|money|gear|vault|chain|mousetrap|"
+                             r"paper airplane|unicorn|robot|arrow|chart|graph|screen|monitor|laptop|keyboard|sign\b|logo|book|document|receipt", re.I)
+
+
+def clean_queries(queries: list[str]) -> list[str]:
+    """Запросы для стоков без метафор и без предметов с текстом: DeepSeek нарушает запрет в промте, поэтому проверяет код."""
+    return [q for q in queries if q and not BANNED_QUERY_RE.search(q) and 2 <= len(q.split()) <= 5]
