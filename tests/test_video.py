@@ -432,3 +432,16 @@ def test_stock_pick_does_not_redownload_saved(tmp_path, monkeypatch):
     monkeypatch.setattr(stock, "search", lambda q, http=None: [{"source": "pixabay", "id": "pixabay-1", "url": "u", "page": "x",
                          "author": "a", "tags": "ship", "width": 1200, "height": 1800}])
     assert stock.pick("ship", tmp_path, lambda i: [], set(), fetch=lambda u: 1 / 0) is None
+
+
+def test_flux_image_quality_gate():
+    import app as A
+    from io import BytesIO
+    from PIL import Image
+    import random
+    assert A.image_problem(b"junk") == "не картинка"
+    assert A.image_problem(png(300, 300)) == "мало пикселей"
+    assert A.image_problem(png(1024, 1024)) == "пустой кадр"
+    b = BytesIO(); im = Image.new("RGB", (600, 600))
+    im.putdata([(random.randint(0, 255),) * 3 for _ in range(360000)]); im.save(b, "PNG")
+    assert A.image_problem(b.getvalue()) is None

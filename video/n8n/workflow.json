@@ -177,7 +177,8 @@
             }
           }
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "v9",
@@ -222,7 +223,8 @@
         "sendBody": true,
         "contentType": "binaryData",
         "inputDataFieldName": "data"
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "v11",
@@ -298,16 +300,16 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1540,
-        0
+        2420,
+        240
       ],
       "onError": "continueRegularOutput",
       "parameters": {
         "method": "POST",
-        "url": "={{ 'http://video-ffmpeg:8020/jobs/' + $json.job + '/' + $json.s + '/stock/' + $json.image_id }}",
+        "url": "={{ 'http://video-ffmpeg:8020/jobs/' + $('Нужен ли FLUX').item.json.job + '/' + $('Нужен ли FLUX').item.json.s + '/stock/' + $('Нужен ли FLUX').item.json.image_id }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({prompt: $json.image_prompt}) }}",
+        "jsonBody": "={{ JSON.stringify({prompt: $('Нужен ли FLUX').item.json.image_prompt}) }}",
         "options": {
           "timeout": 120000,
           "batching": {
@@ -321,12 +323,12 @@
     },
     {
       "id": "v21",
-      "name": "Фото найдено?",
+      "name": "FLUX дал картинку?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1760,
-        0
+        1650,
+        160
       ],
       "parameters": {
         "conditions": {
@@ -337,9 +339,42 @@
           },
           "conditions": [
             {
-              "id": "c2",
-              "leftValue": "={{ $json.found }}",
-              "rightValue": true,
+              "id": "cv21",
+              "leftValue": "={{ $json.result && $json.result.image }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "v22",
+      "name": "Картинка принята?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cv22",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
               "operator": {
                 "type": "boolean",
                 "operation": "true",
@@ -424,7 +459,7 @@
       "main": [
         [
           {
-            "node": "Pixabay сток",
+            "node": "CF FLUX",
             "type": "main",
             "index": 0
           }
@@ -442,7 +477,7 @@
       "main": [
         [
           {
-            "node": "Base64 в файл",
+            "node": "FLUX дал картинку?",
             "type": "main",
             "index": 0
           }
@@ -464,7 +499,7 @@
       "main": [
         [
           {
-            "node": "Ролики",
+            "node": "Картинка принята?",
             "type": "main",
             "index": 0
           }
@@ -508,7 +543,7 @@
       "main": [
         [
           {
-            "node": "Фото найдено?",
+            "node": "Ролики",
             "type": "main",
             "index": 0
           }
@@ -527,6 +562,42 @@
         [
           {
             "node": "CF FLUX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FLUX дал картинку?": {
+      "main": [
+        [
+          {
+            "node": "Base64 в файл",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pixabay сток",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Картинка принята?": {
+      "main": [
+        [
+          {
+            "node": "Ролики",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pixabay сток",
             "type": "main",
             "index": 0
           }

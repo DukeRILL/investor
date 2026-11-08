@@ -123,6 +123,21 @@ async def put_audio(request):
     return JSONResponse({"ok": True})
 
 
+def image_problem(raw: bytes) -> str | None:
+    import io
+    from PIL import Image, ImageStat
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except (OSError, ValueError):
+        return "не картинка"
+    if min(img.size) < 512:
+        return "мало пикселей"
+    if max(ImageStat.Stat(img.convert("L")).stddev) < 8:
+        return "пустой кадр"
+    return None
+
+
 async def put_image(request):
     image_id = request.path_params["image_id"]
     if not re.fullmatch(r"gen\d\d", image_id):
@@ -132,7 +147,11 @@ async def put_image(request):
     except ValueError:
         return JSONResponse({"error": "job"}, 400)
     p.mkdir(parents=True, exist_ok=True)
-    (p / f"{image_id}.png").write_bytes(await request.body())
+    body = await request.body()
+    why = image_problem(body)
+    if why:  # FLUX дал брак (мелкая или пустая картинка): n8n добирает из Pixabay
+        return JSONResponse({"ok": False, "error": why})
+    (p / f"{image_id}.png").write_bytes(body)
     return JSONResponse({"ok": True})
 
 
