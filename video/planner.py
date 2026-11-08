@@ -207,3 +207,68 @@ def library_shot_problems(shots: list[dict], library: dict[str, dict]) -> list[s
     if len(logo_at) > 2:
         errs.append("логотип больше 2 раз")
     return errs
+
+
+def split_library(generated: list[dict], scripts: list[dict]) -> list[list[str]]:
+    """Делит сгенерированные картинки между роликами: у каждого ролика свои (решение Ильи 2026-11-08).
+
+    Картинка уходит ролику, где её факт звучит; при равенстве — ролику, у которого пока меньше картинок.
+    """
+    out: list[list[str]] = [[] for _ in scripts]
+    facts = [{l.get("fact_id") for l in s["lines"]} for s in scripts]
+    for g in generated:
+        cand = [i for i, f in enumerate(facts) if g.get("fact_id") in f] or list(range(len(scripts)))
+        best = min(cand, key=lambda i: (len(out[i]), i))
+        out[best].append(g["id"])
+    return out
+
+
+def assemble_shots(lines: list[dict], matches: dict[str, list[str]], library: dict[str, dict],
+                   used_elsewhere: dict[str, int], max_videos: int = 2) -> list[dict]:
+    """Раскладывает кадры по правилам владельца; модель только подсказывает подходящие картинки.
+
+    Кадр не длиннее 4 с, каждая картинка один раз, первый кадр — основатели, логотип только в финале (так он
+    никогда не ближе 7 кадров), сгенерированная картинка не больше чем в max_videos роликах.
+    Если подходящих картинок для фразы меньше, чем нужно кадров, добираем неиспользованными сгенерированными
+    (сначала реже всего показанными) и помечаем кадр fit=False, чтобы это было видно в отчёте.
+    """
+    import math
+    shots: list[dict] = []
+    used: set[str] = set()
+    founder = next((k for k, v in library.items() if v.get("kind") == "founder"), None)
+    brand = next((k for k, v in library.items() if v.get("kind") == "brand"), None)
+
+    def free(img: str) -> bool:
+        item = library.get(img)
+        if item is None or img in used or item.get("kind") == "brand":
+            return False
+        return item.get("kind") != "generated" or used_elsewhere.get(img, 0) < max_videos
+
+    for li, ln in enumerate(lines):
+        dur = ln["end"] - ln["start"]
+        need = max(1, math.ceil(dur / MAX_SHOT - 1e-9))
+        if ln["line"] == "CTA" and brand:
+            shots.append({"line": "CTA", "start": ln["start"], "end": ln["end"], "image_id": brand, "source_type": "original", "fit": True})
+            continue
+        cands = list(matches.get(ln["line"], []))
+        if li == 0 and founder:
+            cands = [founder] + [c for c in cands if c != founder]
+        picks = [(c, True) for c in dict.fromkeys(cands) if free(c)][:need]
+        for c, _ in picks:
+            used.add(c)
+        while len(picks) < need:
+            spare = sorted((k for k, v in library.items() if v.get("kind") == "generated" and free(k)),
+                           key=lambda k: (used_elsewhere.get(k, 0), k))
+            if not spare:
+                break
+            used.add(spare[0])
+            picks.append((spare[0], False))
+        if not picks:
+            if shots:
+                shots[-1]["end"] = ln["end"]
+            continue
+        step = dur / len(picks)
+        for i, (img, fit) in enumerate(picks):
+            shots.append({"line": ln["line"], "start": round(ln["start"] + i * step, 2), "end": round(ln["start"] + (i + 1) * step, 2),
+                          "image_id": img, "source_type": "generated" if library[img].get("kind") == "generated" else "original", "fit": fit})
+    return shots

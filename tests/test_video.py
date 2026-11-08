@@ -325,3 +325,25 @@ def test_library_rules_unique_images_and_logo_gap():
     assert P.library_shot_problems(sh(["img02", "gen01", "img01", "gen02"]), lib) == []
     errs = " ".join(P.library_shot_problems(sh(["gen01", "img02", "img02", "img01", "gen02", "img01"]), lib))
     assert "первый кадр" in errs and "уже был" in errs and "логотип ближе" in errs
+
+
+def test_split_library_gives_each_video_its_own_images():
+    gens = [{"id": f"gen{i}", "fact_id": f} for i, f in enumerate(["F1", "F5", "F6", "F9", "F12", "F13"])]
+    scripts = [{"lines": [{"fact_id": "F1"}, {"fact_id": "F9"}]}, {"lines": [{"fact_id": "F5"}]}, {"lines": [{"fact_id": "F6"}]}, {"lines": [{"fact_id": "F12"}]}]
+    parts = P.split_library(gens, scripts)
+    flat = [g for p in parts for g in p]
+    assert sorted(flat) == sorted(g["id"] for g in gens) and len(flat) == len(set(flat))
+    assert "gen0" in parts[0] and "gen1" in parts[1] and all(parts)
+
+
+def test_assemble_follows_owner_rules():
+    lib = {"img02": {"kind": "founder"}, "img01": {"kind": "brand"}, "img04": {"kind": "chart"},
+           **{f"gen{i}": {"kind": "generated"} for i in range(1, 7)}}
+    lines = [{"line": f"T{i}", "start": i * 3.5, "end": i * 3.5 + 3.5} for i in range(7)] + [{"line": "CTA", "start": 24.5, "end": 28}]
+    matches = {"T0": ["gen1"], "T1": ["img02", "gen2"], "T2": ["img01"], "T3": ["gen1", "gen3"], "T4": ["img01", "gen4"],
+               "T5": ["img04"], "T6": ["gen5"]}
+    shots = P.assemble_shots(lines, matches, lib, {"gen5": 2})
+    assert shots[0]["image_id"] == "img02"
+    assert P.library_shot_problems(shots, lib) == []
+    assert "gen5" not in [s["image_id"] for s in shots]  # уже в двух других роликах
+    assert shots[-1]["image_id"] == "img01" and [s["image_id"] for s in shots].count("img01") == 1
