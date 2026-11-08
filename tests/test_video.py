@@ -507,3 +507,11 @@ def test_stock_pick_saves_new_find_in_db(tmp_path, monkeypatch):
                         "author": "a", "width": 1200, "height": 1800}])
     got = stock.pick("ship", tmp_path, lambda i: [], set(), fetch=lambda u: png(1200, 1800), db=db, issue="j")
     assert got["id"] == "pixabay-9" and imagedb.report(db)["images"] == 1
+
+
+def test_subtitles_show_brands_and_names_in_latin_but_keep_russian_companies():
+    import names
+    assert names.display("Они сделали Уоп, Стивен Шварц и Кэмерон Зуб") == "Они сделали Whop, Steven Schwartz и Cameron Zoub"
+    assert names.display("в Телеграм, Школа единорогов") == "в Telegram, Школа единорогов"
+    ass = R.build_ass([{"start": 0.0, "end": 3.0, "words": [("Уоп", 0, 1), ("растёт", 1, 2)], "on_screen": "Уоп: Стивен Шварц"}], 3.0)
+    assert "Whop" in ass and "Уоп" not in ass and "STEVEN SCHWARTZ" in ass

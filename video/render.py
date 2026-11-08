@@ -447,6 +447,9 @@ def num_size(txt: str, maxw: int = 980) -> int:
 
 
 def build_ass(timeline: list[dict], total: float) -> str:
+    import names
+    timeline = [{**sc, "words": [(names.display(w), a, b) for w, a, b in sc["words"]], "on_screen": names.display(sc.get("on_screen") or "")}
+                for sc in timeline]
     head = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {W}
