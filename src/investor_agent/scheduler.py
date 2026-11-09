@@ -11,6 +11,7 @@ from .app import App
 from .radar import digest as radar_digest
 from .radar import pipeline as radar
 from .report import send_weekly_report
+from .riddle import pipeline as riddle
 from .timeutil import BEIJING, PeakHoursError, is_peak, next_offpeak, now_bj
 from .unicorn import pipeline as unicorn
 from .unicorn import poll as unicorn_poll
@@ -22,6 +23,9 @@ UNICORN_PREPARE_TIMES = ((4, 30),)   # 30 min after the poll closes; NOT earlier
 UNICORN_RETRY_HOURS = 3              # after a failure: try again every 3 hours (peak windows push it out further)
 UNICORN_RETRY_UNTIL = 22             # no new attempts from 22:00; tomorrow's 04:30 starts the next issue
 UNICORN_PUBLISH_TIME = (10, 0)
+RIDDLE_PREPARE_TIMES = ((0, 30),)    # «Разгадка бизнеса»: whole night off-peak, away from the 04:30 Unicorn job
+RIDDLE_RETRY_UNTIL = 13              # retries every 3 h until 13:00 (the weekday peak window starts at 13:45)
+RIDDLE_PUBLISH_TIME = (16, 0)        # 11:00 Moscow
 RADAR_DIGEST_TIME = radar_digest.DIGEST_TIME_BEIJING   # 22:00 Moscow
 RADAR_EVERY_HOURS = 3
 WEEKLY_REPORT = (6, 20, 0)   # Sunday 20:00 Beijing
@@ -77,6 +81,10 @@ class Scheduler:
                 retry_fn=self._prepare_retry),
             Job("unicorn_publish", lambda: unicorn.publish(app), lambda n: next_daily(n, (UNICORN_PUBLISH_TIME,)),
                 uses_deepseek=False),
+            Job("riddle_prepare", lambda: riddle.prepare(app), lambda n: next_daily(n, RIDDLE_PREPARE_TIMES),
+                retry_fn=self._riddle_retry),
+            Job("riddle_publish", lambda: riddle.publish(app), lambda n: next_daily(n, (RIDDLE_PUBLISH_TIME,)),
+                uses_deepseek=False),
             Job("radar", lambda: radar.run(app), next_radar),
             Job("radar_digest", lambda: radar_digest.run(app), lambda n: next_daily(n, (RADAR_DIGEST_TIME,)),
                 uses_deepseek=False),
@@ -101,8 +109,28 @@ class Scheduler:
             return None
         return nxt
 
+    def _riddle_retry(self, result: object, now: datetime) -> datetime | None:
+        """A failed or BLOCKED «Разгадка бизнеса» is prepared again every 3 hours until 13:00 Beijing."""
+        if result not in ("failed", "blocked"):
+            return None
+        nxt = now + timedelta(hours=UNICORN_RETRY_HOURS)
+        if nxt.date() != now.date() or nxt.hour >= RIDDLE_RETRY_UNTIL:
+            self.app.notify_admin("Разгадка бизнеса: выпуск на сегодня не подготовлен, повторных попыток больше нет "
+                                  "(следующая — завтра в 00:30 по Пекину).")
+            return None
+        return nxt
+
+    def _catch_up_riddle(self, now: datetime) -> None:
+        draft = self.app.store.draft_get(riddle.draft_key(riddle.issue_date(now)))
+        minutes = now.hour * 60 + now.minute
+        if draft and draft["status"] == "ready" and (now.hour, now.minute) >= RIDDLE_PUBLISH_TIME:
+            self._job("riddle_publish").next_run = now
+        elif (not draft or draft["status"] in ("failed", "blocked")) and 30 <= minutes < RIDDLE_RETRY_UNTIL * 60:
+            self._job("riddle_prepare").next_run = now
+
     def _catch_up(self, now: datetime) -> None:
         """After a restart: publish today's ready report if it was missed; redo a missing or failed preparation."""
+        self._catch_up_riddle(now)
         minutes = now.hour * 60 + now.minute
         if not (270 <= minutes < UNICORN_RETRY_UNTIL * 60):
             return
@@ -133,6 +161,8 @@ class Scheduler:
         # an issue that became ready after 10:00 (a retry) goes out at once, followed by the readers' poll
         if job.name == "unicorn_prepare" and result == "ready" and now.hour >= 10:
             self._job("unicorn_publish").next_run = now
+        if job.name == "riddle_prepare" and result == "ready" and (now.hour, now.minute) >= RIDDLE_PUBLISH_TIME:
+            self._job("riddle_publish").next_run = now
 
     def tick(self) -> None:
         now = self.clock()

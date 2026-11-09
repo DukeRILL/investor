@@ -20,17 +20,21 @@ class Settings(BaseModel):
     telegram_admin_chat_id: str = ""
     publish_mode: str = "auto"
     radar_publish_mode: str = "draft"  # Invest Radar only; Unicorn School follows publish_mode
+    riddle_publish_mode: str = "draft"  # «Разгадка бизнеса»: admin chat until the owner switches it to auto
 
     fred_api_key: str = ""
     cloudinary_cloud_name: str = ""
     cloudinary_api_key: str = ""
     cloudinary_api_secret: str = ""
+    pixabay_api_key: str = ""          # stock photos for «Разгадка бизнеса» (optional)
+    cloudflare_account_id: str = ""    # FLUX illustrations for «Разгадка бизнеса» (optional, last resort)
+    cloudflare_api_token: str = ""
     database_path: Path = Path("data/investor.sqlite3")
     prompts_dir: Path = PROJECT_ROOT / "prompts"
     radar_config_path: Path = PROJECT_ROOT / "config" / "radar.yaml"
     scheduler_enabled: bool = True
 
-    @field_validator("publish_mode", "radar_publish_mode")
+    @field_validator("publish_mode", "radar_publish_mode", "riddle_publish_mode")
     @classmethod
     def _mode(cls, value: str) -> str:
         value = value.strip().lower()

@@ -28,9 +28,10 @@ class App:
     def prompt(self, name: str) -> str:
         return (self.settings.prompts_dir / f"{name}.md").read_text(encoding="utf-8")
 
-    def target_chat(self, radar: bool = False) -> str:
-        """Channel in auto mode; admin chat in draft mode. Radar has its own mode."""
-        mode = self.settings.radar_publish_mode if radar else self.settings.publish_mode
+    def target_chat(self, radar: bool = False, riddle: bool = False) -> str:
+        """Channel in auto mode; admin chat in draft mode. Radar and «Разгадка бизнеса» have their own modes."""
+        mode = (self.settings.radar_publish_mode if radar else self.settings.riddle_publish_mode if riddle
+                else self.settings.publish_mode)
         if mode == "auto":
             return self.settings.telegram_chat_id
         return self.settings.telegram_admin_chat_id or self.settings.telegram_chat_id

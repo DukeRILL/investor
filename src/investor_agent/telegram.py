@@ -136,6 +136,10 @@ class TelegraphClient:
                    "content": json.dumps(nodes, ensure_ascii=False, separators=(",", ":")), "return_content": False}
         return self._call("editPage", payload)["url"]
 
+    def get_page(self, url: str) -> list:
+        """Content nodes of a published page, to check what readers really get."""
+        return self._call("getPage", {"path": url.rstrip("/").rsplit("/", 1)[-1], "return_content": True}).get("content") or []
+
     def create_page(self, title: str, nodes: list) -> str:
         payload = {"access_token": self._token(), "title": title[:256], "author_name": self.author_name,
                    "author_url": self.author_url, "content": json.dumps(nodes, ensure_ascii=False, separators=(",", ":")),  # Telegraph caps content at 64 KB

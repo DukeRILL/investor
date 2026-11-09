@@ -45,6 +45,7 @@ async def health(_request):
         "telegram_configured": bool(settings.telegram_bot_token),
         "now_beijing": now_bj().isoformat(timespec="minutes"),
         "unicorn_today": draft["status"] if draft else None,
+        "riddle_today": (lambda d: d["status"] if d else None)(app.store.draft_get(f"riddle:{issue_date()}") if app else None),
         "last_radar_window_end": app.store.last_ok_window_end() if app else None,
         "jobs": state["scheduler"].status() if "scheduler" in state else None,
     })

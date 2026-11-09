@@ -69,6 +69,10 @@ class FakeTelegraph:
     def upload_image(self, data, content_type):
         return "https://telegra.ph/file/test.jpg"
 
+    def get_page(self, url):
+        urls = ["https://telegra.ph/test-page"] + [f"https://telegra.ph/test-page-{i}" for i in range(2, len(self.pages) + 1)]
+        return self.pages[urls.index(url)][1] if url in urls else []
+
 
 class FakeDeepSeek:
     """Scripted research(): each call pops a handler(registry, payload) -> dict."""

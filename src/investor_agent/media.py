@@ -115,13 +115,13 @@ def _image_for(item: dict, src, http: Http, upload: Callable[[bytes, str], str],
 
 
 def resolve_media(items: list[dict], registry: SourceRegistry, http: Http,
-                  upload: Callable[[bytes, str], str]) -> list[dict]:
+                  upload: Callable[[bytes, str], str], max_items: int = MAX_ITEMS) -> list[dict]:
     """Turn the model's nominations into media that can be placed on the page. Unusable items are dropped."""
     out: list[dict] = []
     seen: set[str] = set()
     used_images: set[str] = set()
-    for item in (items or [])[:MAX_ITEMS + 4]:
-        if not isinstance(item, dict) or len(out) >= MAX_ITEMS:
+    for item in (items or [])[:max_items + 4]:
+        if not isinstance(item, dict) or len(out) >= max_items:
             continue
         src = registry.get(str(item.get("source", "")))
         if not src:
