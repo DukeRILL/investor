@@ -24,15 +24,16 @@ def db(app) -> GrowthDb:
     return cached
 
 
-def invites_enabled(app) -> bool:
-    """Real invite links only in auto mode (a draft/test run must not create links in the production channel)."""
-    return app.settings.publish_mode == "auto" and bool(app.settings.telegram_bot_token)
+def invites_enabled(app, platform: str = "telegram") -> bool:
+    """Real invite links only in auto mode of that rubric (a draft/test run must not create links in the channel)."""
+    mode = app.settings.riddle_publish_mode if platform == "riddle" else app.settings.publish_mode
+    return mode == "auto" and bool(app.settings.telegram_bot_token)
 
 
-def ensure_invite(app, link: dict, issue_date: str) -> dict:
+def ensure_invite(app, link: dict, issue_date: str, platform: str = "telegram") -> dict:
     """Give the link its own Telegram invite link (idempotent). On failure the channel's public link is used and
     joins through it are counted as UNKNOWN."""
-    if link.get("invite_link") or not invites_enabled(app):
+    if link.get("invite_link") or not invites_enabled(app, platform):
         return link
     try:
         name = f"{link['source'][:9]}-{link['medium'][:8]}-{issue_date}"[:32]
@@ -54,6 +55,8 @@ def public_href(app, link: dict) -> str:
     return f"{base}/go/{link['code']}" if base else destination(link)
 
 
-def make_link(app, pub_id: int, issue_date: str, source: str, medium: str, target: str = CHANNEL_URL) -> dict:
-    link = db(app).link_get_or_create(pub_id, normalize_source(source), medium, target, f"issue-{issue_date}")
-    return ensure_invite(app, link, issue_date)
+def make_link(app, pub_id: int, issue_date: str, source: str, medium: str, target: str = CHANNEL_URL,
+              platform: str = "telegram") -> dict:
+    tag = issue_date if platform == "telegram" else f"{platform}-{issue_date}"
+    link = db(app).link_get_or_create(pub_id, normalize_source(source), medium, target, f"issue-{tag}")
+    return ensure_invite(app, link, tag, platform)

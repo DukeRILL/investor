@@ -31,6 +31,10 @@ def _age_note(measured_at: str | None, now: datetime) -> str:
     return f"от {measured_at[:10]}" + (" ⚠️ устарело" if stale else "")
 
 
+def _name(pub: dict) -> str:
+    return pub['company_name'] + (" · Разгадка" if pub.get('platform') == 'riddle' else "")
+
+
 def build_report(app, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     gdb = db(app)
@@ -67,18 +71,18 @@ def build_report(app, now: datetime | None = None) -> str:
         clicks = sum(n for (s, t), n in gdb.traffic_counts(pub["id"]).items() if t == "click")
         conv = f"{joins / views * 100:.1f}% (расчёт)" if views else "н/д"
         click_txt = str(clicks) if app.settings.public_base_url else "не измеряются"
-        L.append(f"• {escape(pub['company_name'])} ({pub['issue_date']}): просмотры Telegraph {_fmt(views)} "
+        L.append(f"• {escape(_name(pub))} ({pub['issue_date']}): просмотры Telegraph {_fmt(views)} "
                  f"({_age_note(v and v['measured_at'], now)}), переходы по ссылкам {click_txt}, вступления по "
                  f"ссылке выпуска {joins}, конверсия вступлений к просмотрам {conv}")
     top_views = sorted(((gdb.snapshot_latest(p["id"], "telegraph", "views", "telegraph"), p) for p in gdb.publications()),
                        key=lambda x: -(x[0]["value"] if x[0] else -1))[:3]
     if top_views and top_views[0][0]:
-        L += ["", "<b>Лучшие по просмотрам</b>"] + [f"{i}. {escape(p['company_name'])} — {_fmt(v['value'])}"
+        L += ["", "<b>Лучшие по просмотрам</b>"] + [f"{i}. {escape(_name(p))} — {_fmt(v['value'])}"
                                                        for i, (v, p) in enumerate(top_views, 1) if v]
     best_join = sorted(((sum(n for (s, t), n in gdb.subscription_counts(pub_id=p["id"]).items() if t == "join"), p)
                         for p in gdb.publications()), key=lambda x: -x[0])[:3]
     if best_join and best_join[0][0]:
-        L += ["", "<b>Лучшие по подпискам</b>"] + [f"{i}. {escape(p['company_name'])} — {n}"
+        L += ["", "<b>Лучшие по подпискам</b>"] + [f"{i}. {escape(_name(p))} — {n}"
                                                    for i, (n, p) in enumerate(best_join, 1) if n]
     L += ["", "<b>TGStat</b> <i>(внешний сервис, FREE)</i>"]
     st = collect.tgstat_state(app, now)

@@ -73,10 +73,10 @@ class GrowthDb:
             row = c.execute("SELECT * FROM publications WHERE id=?", (pub_id,)).fetchone()
         return dict(row) if row else None
 
-    def publication_by_date(self, issue_date: str) -> dict | None:
+    def publication_by_date(self, issue_date: str, platform: str = "telegram") -> dict | None:
         with self.store._conn() as c:
-            row = c.execute("SELECT * FROM publications WHERE issue_date=? AND platform='telegram'",
-                            (issue_date,)).fetchone()
+            row = c.execute("SELECT * FROM publications WHERE issue_date=? AND platform=?",
+                            (issue_date, platform)).fetchone()
         return dict(row) if row else None
 
     def publications(self, limit: int = 1000) -> list[dict]:

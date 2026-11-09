@@ -22,6 +22,7 @@ from ..storage import norm_name
 from ..telegram import TelegramError
 from ..textfmt import minutes_ru, text_to_nodes, visible_len
 from ..timeutil import PeakHoursError, now_bj, ru_date
+from ..growth import publish as growth_publish
 from ..unicorn.pipeline import _channel_button, _figure, logo_url, _interleave, _registry_from, _uploader, create_pages
 from ..unicorn.precheck import image_alive, video_alive
 from . import visuals
@@ -362,7 +363,7 @@ def channel_url(app: App) -> str:
 
 
 def build_page(report: dict, registry: SourceRegistry, date_str: str, channel: str,
-               header: str | None = None, button: str | None = None) -> tuple[str, list]:
+               header: str | None = None, button: str | None = None, subscribe: list | None = None) -> tuple[str, list]:
     title = f"{RUBRIC}: {report['headline']}"[:256]
     top = hero(report)
     by_act: dict[str, list] = {}
@@ -394,9 +395,11 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, channel: s
         {"tag": "li", "children": [f"[{s.id[1:]}] ", {"tag": "a", "attrs": {"href": s.url}, "children": [s.title or s.url]},
                                    f" — {s.publisher}" + (f", {s.date[:10]}" if s.date else "")]}
         for s in public_sources(report, registry)]})
-    nodes.append({"tag": "p", "children": ["Новые расследования каждый день — подписывайтесь на ",
-                                           {"tag": "a", "attrs": {"href": channel}, "children": ["«Школу единорогов»"]}, "."]})
+    if not subscribe:  # growth off: the old one-line invitation before the banner
+        nodes.append({"tag": "p", "children": ["Новые расследования каждый день — подписывайтесь на ",
+                                               {"tag": "a", "attrs": {"href": channel}, "children": ["«Школу единорогов»"]}, "."]})
     nodes.extend(_channel_button(button, channel))  # the same button as at the end of Unicorn School articles
+    nodes.extend(subscribe or [])  # banner (personal link), the channel line, then the subscribe text
     return title, nodes
 
 
@@ -651,8 +654,11 @@ def publish(app: App, today: str | None = None) -> str:
                 app.store.draft_save(key, "blocked", payload, error="; ".join(missing))
                 app.notify_admin(f"{RUBRIC}: {today} BLOCKED перед публикацией — " + "; ".join(missing))
                 return "blocked"
-            url = create_pages(app.telegraph, *build_page(report, registry, date_str, channel_url(app), header_url(app), button_url(app)))
+            href = growth_publish.begin(app, today, report, "riddle")  # the article's personal invite link
+            url = create_pages(app.telegraph, *build_page(report, registry, date_str, href or channel_url(app),
+                                                          header_url(app), button_url(app), growth_publish.block(href)))
             app.store.draft_mark(key, "ready", page_url=url)
+            growth_publish.page_created(app, today, report, url, "riddle")  # "Поделиться разбором"; never raises
         status = publication_status(report, _verify_pages(app, url))
         payload["status"] = status
         if status["status"] != "READY":
@@ -667,6 +673,8 @@ def publish(app: App, today: str | None = None) -> str:
         return "failed"
     app.store.draft_save(key, "published", payload)
     app.store.draft_mark(key, "published", page_url=url, message_ids=[mid])
+    growth_publish.post_sent(app, today, report, url, mid, "riddle", app.target_chat(riddle=True),
+                             "🔎 Читать расследование")  # message id + "Отправить другу"; never raises
     _archive_add(app, report, today, url)
     mode = app.settings.riddle_publish_mode
     app.notify_admin(f"{RUBRIC} {today} ({mode}): {report['company_name']} — READY, изображений {status['images']}, "

@@ -436,7 +436,7 @@ def _channel_button(logo: str | None = None, channel: str = CHANNEL_URL, text_li
     """Telegraph has no buttons, stretches pictures to the full width, and a link around a picture is not tappable in
     every viewer (the owner saw it dead on a phone). So: the button picture plus a text link right under it."""
     link = {"tag": "p", "children": [{"tag": "a", "attrs": {"href": channel}, "children": [
-        "🦄 Перейти на канал: " + channel.removeprefix("https://")]}]}
+        "🦄 Перейти на канал: " + (CHANNEL_URL if "t.me/+" in channel else channel).removeprefix("https://")]}]}
     tail = [link] if text_link else []  # Школа: no text line (Илья, 2026-11-09), the link sits in the subscribe text
     if logo:
         return [{"tag": "figure", "children": [{"tag": "a", "attrs": {"href": channel}, "children": [

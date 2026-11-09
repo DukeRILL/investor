@@ -996,3 +996,85 @@ def test_stale_poll_intent_is_cleared_when_poll_key_exists(make_app):
     assert unicorn.unresolved_states(app)["poll"] == {"2026-11-10": "sending"}
     assert upoll.post(app, "2026-11-10", ["a", "b"]) is None
     assert unicorn.unresolved_states(app)["poll"] == {} and not app.store.get("unicorn_poll_intent:2026-11-10:told")
+
+
+# --- «Разгадка бизнеса» gets the same footer ---------------------------------------------------------------------
+from urllib.parse import unquote
+
+from test_riddle import CountingHost, media_http, story
+from investor_agent.riddle import pipeline as riddle
+
+
+def riddle_app(make_app, mode="draft"):
+    ds = FakeDeepSeek([lambda reg, p: story(reg)])
+    app = make_app(deepseek=ds, http=media_http(), images=CountingHost())
+    app.settings.riddle_publish_mode = mode
+    assert riddle.prepare(app, DAY) == "ready"
+    assert riddle.publish(app, DAY) == "published"
+    return app
+
+
+def anchors(nodes):
+    out = []
+
+    def walk(n):
+        if isinstance(n, dict):
+            if n.get("tag") == "a":
+                out.append((n["attrs"]["href"], flat(n)))
+            for c in n.get("children", []):
+                walk(c)
+    for n in nodes:
+        walk(n)
+    return out
+
+
+def test_riddle_footer_has_personal_link_subscribe_text_share_and_friend_button(make_app):
+    app = riddle_app(make_app, "auto")
+    nodes = app.telegraph.by_url["https://telegra.ph/test-page"][1]
+    text = flat(nodes)
+    mine = [a for a in anchors(nodes) if a[0] == "https://t.me/+inv1"]
+    assert len(mine) == 3 and "img" in mine[0][1] and "Перейти на канал: t.me/investor_duker" in mine[1][1]
+    assert "ШКОЛА ЕДИНОРОГОВ" in mine[2][1]  # banner, the kept channel line (shows the public name), phrase: one link
+    assert app.telegram.invites == ["telegraph-cta-riddle-2026-11-09"]
+    assert "Подписывайтесь на канал" in text and "Каждый день разбираем бизнес" in text
+    assert "Новые расследования каждый день" not in text and "Перейти на канал" in text  # the old line is replaced
+    assert "Поделиться разбором" in text and "t.me/share/url" in text and "vk.com/share.php" in text and "wa.me" in text
+    tg = [h for h, _ in anchors(nodes) if h.startswith("https://t.me/share/url")][0]
+    shared = unquote(tg)
+    assert "text=Как скучная накладная стала бизнесом на миллиард: " in shared  # the headline leads, not the company name
+    gdb = db(app)
+    pub = gdb.publication_by_date(DAY, "riddle")
+    assert pub["telegram_message_id"] == 1 and pub["share_done"] and gdb.publication_by_date(DAY) is None
+    rows = app.telegram.buttons[1]
+    assert rows[0][0][0] == "🔎 Читать расследование" and rows[1][0][0] == "📤 Отправить другу"
+    assert "https%3A%2F%2Ft.me%2Finvestor_duker%2F1" in rows[1][0][1]
+
+
+def test_riddle_draft_mode_creates_no_invite_links_and_posts_to_admin(make_app):
+    app = riddle_app(make_app)
+    nodes = app.telegraph.by_url["https://telegra.ph/test-page"][1]
+    assert not getattr(app.telegram, "invites", [])
+    assert any(h == "https://t.me/investor_duker" and "img" in t for h, t in anchors(nodes))  # banner: public link
+    assert "Поделиться разбором" in flat(nodes)
+    assert app.telegram.sent[0]["chat"] == "111" and 1 in app.telegram.buttons
+    assert riddle.publish(app, DAY) == "already_published"
+    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Поделиться разбором") == 1
+
+
+def test_riddle_and_unicorn_of_the_same_day_are_separate_publications(make_app):
+    app = riddle_app(make_app)
+    gdb = db(app)
+    gdb.publication_upsert(DAY, "Other", platform="telegram")
+    assert gdb.publication_by_date(DAY, "riddle")["company_name"] == "Acme"
+    assert gdb.publication_by_date(DAY)["company_name"] == "Other"
+
+
+def test_growth_off_keeps_the_old_riddle_footer(make_app):
+    ds = FakeDeepSeek([lambda reg, p: story(reg)])
+    app = make_app(deepseek=ds, http=media_http(), images=CountingHost())
+    app.settings.growth_enabled = False
+    riddle.prepare(app, DAY)
+    assert riddle.publish(app, DAY) == "published"
+    text = flat(app.telegraph.pages[0][1])
+    assert "Новые расследования каждый день" in text and "Поделиться разбором" not in text
+    assert not getattr(app.telegram, "buttons", {})

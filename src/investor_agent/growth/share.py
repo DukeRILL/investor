@@ -26,7 +26,7 @@ def clean_hook(text: str, limit: int = 140) -> str:
 
 def build_hook(report: dict) -> str:
     """A hook from the facts of this very article: the subtitle, else the first sentence of the teaser."""
-    hook = clean_hook(report.get("subtitle", ""))
+    hook = clean_hook(report.get("share_fact") or report.get("subtitle", ""))
     if not hook:
         first = re.split(r"(?<=[.!?])\s", clean_hook(report.get("teaser", ""), 400), maxsplit=1)[0]
         hook = clean_hook(first)
