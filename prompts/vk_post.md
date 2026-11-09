@@ -16,7 +16,7 @@ Return only a JSON object: `{"hook": "...", "body": "...", "teaser_hook": "...",
 - The single most interesting CONFIRMED fact.
 - One non-trivial observation or conclusion for an entrepreneur (a thought, not a new fact).
 - **Closing hook (mandatory, owner's rule 2026-11-09).** Before the final line add 1–2 sentences that tease ONE concrete, confirmed thing that is in the full article but NOT in this post (a number, a decision, a mistake, a turn, a comparison) and leave it unresolved, e.g. «А почему в 2023 году оценку пришлось снижать почти на 30% — в полном разборе.» Never tease something the article does not contain. Return it also in the `teaser_hook` field.
-- Last line: an invitation to read the full breakdown in Telegram, e.g. «Полный разбор — в Telegram:». Do not write the URL.
+- Last line: an invitation to read the full breakdown by the link below, e.g. «Полный разбор читайте по ссылке:». Do not write the URL and do not mention Telegram (the link leads to the article, where the Telegram call-to-action already is).
 
 ## Hard prohibitions
 - Never invent numbers, dates, names, quotes or facts. Every number in `body` must appear in the article text; list each in `fact_check`.

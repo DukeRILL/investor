@@ -42,7 +42,7 @@
               "id": "a1",
               "name": "message",
               "type": "string",
-              "value": "={{ $json.body.text + '\\n\\n' + $json.body.channel_url }}"
+              "value": "={{ $json.body.text + '\\n\\n' + $json.body.article_url }}"
             },
             {
               "id": "a2",

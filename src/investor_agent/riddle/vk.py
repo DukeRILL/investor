@@ -28,8 +28,8 @@ def validate(body: str, article: str) -> list[str]:
     unknown = sorted(_digits(body) - _digits(article))
     if unknown:
         errors.append("числа не найдены в статье: " + ", ".join(unknown))
-    if "telegram" not in body.lower() and "телеграм" not in body.lower():
-        errors.append("нет приглашения читать разбор в Telegram")
+    if "разбор" not in body.lower().rsplit("\n", 1)[-1]:
+        errors.append("последняя строка должна приглашать читать полный разбор по ссылке")
     return errors
 
 
