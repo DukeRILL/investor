@@ -18,6 +18,7 @@ Read `docs/ARCHITECTURE.md` and `docs/RULES.md` before changing behaviour.
 - Small diffs, run tests, push to `main`. Do not deploy without the owner's go-ahead.
 
 ## Server (Singapore, Tencent, Ubuntu)
+- Owner connects over SSH and wants key-based login, not a password: give key-based instructions only (see memory `ssh-key-auth-preference`).
 - Repo: `/opt/investor`; data: `/opt/investor/data`; container `investor-agent` on `127.0.0.1:8010`.
 - Docker only via `sudo`. Do not touch other containers (ltc-*, n8n, …) or `/opt/crypto-telegram-bot`.
 - Rebuild: `sudo docker build -t investor-agent:$(git rev-parse --short HEAD) .` then recreate the container with the same flags as in README.

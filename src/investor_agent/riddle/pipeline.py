@@ -25,7 +25,7 @@ from ..timeutil import PeakHoursError, now_bj, ru_date
 from ..growth import publish as growth_publish
 from ..unicorn.pipeline import _channel_button, _figure, logo_url, _interleave, _registry_from, _uploader, create_pages
 from ..unicorn.precheck import image_alive, video_alive
-from . import visuals
+from . import visuals, vk
 
 log = logging.getLogger(__name__)
 
@@ -526,8 +526,9 @@ def _prepare(app: App, today: str, company: str | None = None) -> str:
     used |= {str(report["website_source"])} if registry.get(str(report.get("website_source", ""))) else set()  # the logo is found on it at publish time
     sources = registry.brief(sorted((u for u in used if u), key=lambda x: int(x[1:])))
     state = "ready" if status["status"] == "READY" else "blocked"
+    vk_post = _vk_post(app, report) if state == "ready" and app.settings.vk_n8n_webhook_url else None
     app.store.draft_save(draft_key(today), state, {"report": report, "sources": sources, "status": status,
-                                                   "manifests": manifests(report)})
+                                                   "manifests": manifests(report), "vk_post": vk_post})
     if state == "blocked":
         app.notify_admin(f"{RUBRIC} на {today}: BLOCKED ({report['company_name']}) — не хватает: "
                          + "; ".join(status["missing"]) + ". Материал сохранён черновиком, следующая попытка через 3 часа.")
@@ -619,6 +620,34 @@ def _verify_pages(app: App, url: str) -> tuple[int, int]:
     return imgs, vids
 
 
+def _vk_post(app: App, report: dict) -> dict | None:
+    """VK text is written now (off-peak); a failure never blocks the Telegram issue."""
+    try:
+        result = vk.build(app, report)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("riddle vk post failed: %s", type(exc).__name__)
+        app.notify_admin(f"{RUBRIC}: текст для VK не получился ({type(exc).__name__}), выпуск в Telegram не затронут.")
+        return None
+    if result["errors"]:
+        app.notify_admin(f"{RUBRIC}: текст для VK не прошёл проверку — " + "; ".join(result["errors"]))
+        return None
+    return result
+
+
+def _send_vk(app: App, draft_payload: dict, day: str, url: str) -> None:
+    """Hand the ready post to n8n. Idempotent on the n8n side via guid (company + day). Never raises."""
+    hook, post = app.settings.vk_n8n_webhook_url, (draft_payload.get("vk_post") or {})
+    if not hook or not post.get("text"):
+        return
+    try:
+        app.http.request("POST", hook, json_body={
+            "guid": f"riddle-{day}", "text": post["text"], "article_url": url, "channel_url": channel_url(app),
+            "company": draft_payload["report"].get("company_name"), "cover_url": cover_url(app)}, retry=False, timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("riddle vk handoff failed: %s", type(exc).__name__)
+        app.notify_admin(f"{RUBRIC}: VK-ветка не получила выпуск {day}: {type(exc).__name__}")
+
+
 def _next_part(nodes: list) -> str | None:
     for n in reversed(nodes or []):
         if isinstance(n, dict):
@@ -674,6 +703,8 @@ def publish(app: App, today: str | None = None) -> str:
         return "failed"
     app.store.draft_save(key, "published", payload)
     app.store.draft_mark(key, "published", page_url=url, message_ids=[mid])
+    if app.settings.riddle_publish_mode == "auto":  # drafts in the admin chat must not reach the public VK group
+        _send_vk(app, payload, today, url)
     growth_publish.post_sent(app, today, report, url, mid, "riddle", app.target_chat(riddle=True),
                              "🔎 Читать расследование")  # message id + "Отправить другу"; never raises
     _archive_add(app, report, today, url)
