@@ -25,7 +25,7 @@ from ..timeutil import PeakHoursError, now_bj, ru_date
 from ..growth import publish as growth_publish
 from ..unicorn.pipeline import _channel_button, _figure, logo_url, _interleave, _registry_from, _uploader, create_pages
 from ..unicorn.precheck import image_alive, video_alive
-from . import visuals, vk
+from . import factcheck, visuals, vk
 
 log = logging.getLogger(__name__)
 
@@ -459,16 +459,27 @@ def publication_status(report: dict, page_check: tuple[int, int] | None = None) 
     if not MIN_READ_MINUTES <= minutes <= MAX_READ_MINUTES:
         missing.append(f"расчётное время чтения {minutes} мин, нужно 15–20")
     if page_check is not None:
-        img, vid = page_check
+        img, vid = page_check[0], page_check[1]
         if img < MIN_IMAGES:
             missing.append(f"на опубликованной странице изображений {img} из {MIN_IMAGES}")
         if vid < MIN_VIDEOS:
             missing.append(f"на опубликованной странице видео {vid} из {MIN_VIDEOS}")
-    limits = [str(x) for x in (report.get("research_notes") or report.get("fact_check") or {}).get("limits") or [] if x]
+    fc = report.get("fact_check")
+    if not isinstance(fc, dict) or not fc.get("checked"):
+        missing.append("независимый фактчек не выполнен")
+    elif fc.get("open"):
+        missing.append(f"фактчек: {len(fc['open'])} существенных утверждений в статусе ERROR/UNVERIFIED — "
+                       + "; ".join(fc["open"][:3]))
+    if page_check is not None and len(page_check) > 2 and report.get("verified_numbers"):
+        lost = sorted(set(report["verified_numbers"]) - factcheck.numbers(page_check[2]))
+        if lost:
+            missing.append("опубликованная страница расходится с проверенной версией, нет чисел: " + ", ".join(lost[:8]))
+    limits = [str(x) for x in (report.get("research_notes") or {}).get("limits") or [] if x]
     return {"status": "BLOCKED" if missing else "READY", "missing": missing, "limits": limits,
             "quality": quality_score(report),
             "images": len(report.get("images") or []), "videos": len(report.get("videos_resolved") or []),
-            "rights_to_check": sum(1 for m in report.get("images") or [] if m.get("license") == LICENSE_PAGE)}
+            "rights_to_check": sum(1 for m in report.get("images") or [] if m.get("license") == LICENSE_PAGE),
+            "fact_check": {k: v for k, v in (fc or {}).items() if k != "open"} if isinstance(fc, dict) else {}}
 
 
 # --- jobs -------------------------------------------------------------------------------------
@@ -519,6 +530,8 @@ def _prepare(app: App, today: str, company: str | None = None) -> str:
     if errors:
         raise RiddleError("расследование не прошло проверку: " + "; ".join(errors))
     build_media(app, report, registry)
+    report["fact_check"] = factcheck.run(app, report, registry)  # §14–19: independent check of the FINAL text
+    report["verified_numbers"] = sorted(factcheck.numbers(CITE_RE.sub(" ", article_text(report))))  # compared with the page later
     status = publication_status(report)
     used = set(registry.cited_ids(*[x.get("body", "") for x in report["sections"]]))
     used |= {str(a.get("source")) for a in (report.get("cis") or {}).get("analogs") or [] if registry.get(str(a.get("source", "")))}
@@ -607,17 +620,20 @@ def _prune_dead(app: App, report: dict) -> None:
                                  if video_alive(app.http, v.get("video_url", ""))]
 
 
-def _verify_pages(app: App, url: str) -> tuple[int, int]:
-    """Read the created page (and its continuation parts) back from Telegraph and count images and videos."""
+def _verify_pages(app: App, url: str) -> tuple[int, int, str]:
+    """Read the created page (and its continuation parts) back from Telegraph: images, videos and the text
+    (compared with the fact-checked version, §19)."""
     imgs = vids = 0
+    texts: list[str] = []
     seen = set()
     while url and url not in seen and len(seen) < 5:
         seen.add(url)
         nodes = app.telegraph.get_page(url)
         i, v = count_page_media(nodes, {app.store.get(HEADER_KEY) or "", app.store.get(BUTTON_KEY) or ""})
         imgs, vids = imgs + i, vids + v
+        texts.append(factcheck.page_text(nodes))
         url = _next_part(nodes)
-    return imgs, vids
+    return imgs, vids, "\n".join(texts)
 
 
 def _vk_post(app: App, report: dict) -> dict | None:
@@ -711,7 +727,9 @@ def publish(app: App, today: str | None = None) -> str:
     _archive_add(app, report, today, url)
     mode = app.settings.riddle_publish_mode
     app.notify_admin(f"{RUBRIC} {today} ({mode}): {report['company_name']} — READY, изображений {status['images']}, "
-                     f"видео {status['videos']}, редакционная оценка {status.get('quality')}/10; права на "
+                     f"видео {status['videos']}, редакционная оценка {status.get('quality')}/10; фактчек: проверено "
+                     f"{status.get('fact_check', {}).get('checked', 0)}, ошибок найдено {status.get('fact_check', {}).get('errors_found', 0)}, "
+                     f"исправлено {status.get('fact_check', {}).get('fixed', 0)}, открытых 0; права на "
                      f"{status['rights_to_check']} кадров со страниц-источников проверить перед выходом в канал. "
                      f"Заметки, видеобриф и исследование: python -m investor_agent riddle-brief --date {today}")
     return "published"

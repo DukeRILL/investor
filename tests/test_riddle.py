@@ -55,6 +55,14 @@ def story(registry, videos=3, teaser=None):
     }
 
 
+def fc_ok(reg, payload):
+    """Independent fact check: everything verified."""
+    assert "article" in payload and payload["article"]["sections"]
+    return {"claims": [{"id": "C1", "field": "headline", "text": "миллиард", "kind": "amount", "material": True,
+                        "source": "S1", "source_value": "1", "source_unit": "billion USD", "article_value": "1",
+                        "article_unit": "млрд долларов", "status": "VERIFIED", "fix": None}]}
+
+
 def media_http():
     files = {}
     for i in range(10):
@@ -107,7 +115,7 @@ def test_new_master_prompt_rules():
 
 
 def test_full_cycle_draft_goes_to_admin_with_12_images_and_3_videos(make_app):
-    ds = FakeDeepSeek([lambda reg, p: story(reg)])
+    ds = FakeDeepSeek([lambda reg, p: story(reg), fc_ok])
     app = make_app(deepseek=ds, http=media_http(), images=CountingHost())
     app.store.archive_add("Ramp", "финтех", "США", "2026-11-07", "https://telegra.ph/x")
     assert riddle.prepare(app, "2026-11-09") == "ready"
@@ -137,7 +145,7 @@ def test_full_cycle_draft_goes_to_admin_with_12_images_and_3_videos(make_app):
 
 
 def test_blocked_without_three_videos(make_app):
-    ds = FakeDeepSeek([lambda reg, p: story(reg, videos=3)])
+    ds = FakeDeepSeek([lambda reg, p: story(reg, videos=3), fc_ok])
     http = media_http()
     http.files.pop("https://www.youtube.com/oembed?format=json&url=" + quote("https://www.youtube.com/watch?v=abcdefghij2", safe=""))
     app = make_app(deepseek=ds, http=http, images=CountingHost())
@@ -199,3 +207,45 @@ def test_riddle_page_ends_with_channel_button():
                                  "https://t.me/investor_duker", None, "https://img/tg.png")
     flat = [json.dumps(n, ensure_ascii=False) for n in nodes]
     assert "tg.png" in flat[-2] and "🦄 Перейти на канал" in flat[-1]
+
+
+def test_fact_check_gate_fixes_tenfold_error_and_blocks_open_claims(make_app):
+    from investor_agent.riddle import factcheck
+    assert factcheck.scale_problem({"source_value": "369", "source_unit": "млн юаней", "article_value": "3,7",
+                                    "article_unit": "млрд юаней"}).endswith("(расхождение в 10 раз)")
+    assert factcheck.scale_problem({"source_value": "4573亿", "source_unit": "RMB", "article_value": "457,3",
+                                    "article_unit": "млрд юаней"}) is None
+    assert factcheck.scale_problem({"source_value": "37,400", "source_unit": "million yuan", "article_value": "37,4",
+                                    "article_unit": "млрд юаней"}) is None
+
+    def wrong(reg, p):  # the model calls a tenfold error VERIFIED: the server's own arithmetic overrules it
+        return {"claims": [{"id": "C1", "field": "sections[0].body", "text": "выручка", "material": True, "source": "S1",
+                            "source_value": "369", "source_unit": "млн юаней", "article_value": "3,7",
+                            "article_unit": "млрд юаней", "status": "VERIFIED",
+                            "fix": {"find": "[S1] [S2] [S3]", "replace": "369 млн юаней [S1] [S2] [S3]"}}]}
+
+    def recheck(reg, p):
+        assert p["recheck"][0]["id"] == "C1" and "369 млн юаней [S1]" in json.dumps(p["article"], ensure_ascii=False)
+        return {"claims": [{"id": "C1", "field": "sections[0].body", "text": "выручка", "material": True, "source": "S1",
+                            "source_value": "369", "source_unit": "млн юаней", "article_value": "369",
+                            "article_unit": "млн юаней", "status": "VERIFIED"}]}
+
+    app = make_app(deepseek=FakeDeepSeek([lambda reg, p: story(reg), wrong, recheck]), http=media_http(),
+                   images=CountingHost())
+    assert riddle.prepare(app, "2026-11-09") == "ready"
+    report = app.store.draft_get("riddle:2026-11-09")["payload"]["report"]
+    assert report["fact_check"]["errors_found"] == 1 and report["fact_check"]["fixed"] == 1 and not report["fact_check"]["open"]
+    assert "369 млн юаней [S1] [S2] [S3]" in report["sections"][0]["body"]
+
+    def unverified(reg, p):
+        return {"claims": [{"id": "C1", "field": "headline", "text": "миллиард", "material": True, "status": "UNVERIFIED"}]}
+    app = make_app(deepseek=FakeDeepSeek([lambda reg, p: story(reg), unverified]), http=media_http(),
+                   images=CountingHost())
+    assert riddle.prepare(app, "2026-11-10") == "blocked"
+    assert "фактчек: 1 существенных" in app.telegram.sent[-1]["html"]
+
+
+def test_published_page_must_match_verified_numbers():
+    report = {"verified_numbers": ["457.3", "369"], "fact_check": {"checked": 3, "open": []}}
+    status = riddle.publication_status(report, (12, 3, "Выручка 457,3 млрд, первая партия на 3,7 млрд"))
+    assert any("нет чисел: 369" in m for m in status["missing"])

@@ -1001,12 +1001,12 @@ def test_stale_poll_intent_is_cleared_when_poll_key_exists(make_app):
 # --- «Разгадка бизнеса» gets the same footer ---------------------------------------------------------------------
 from urllib.parse import unquote
 
-from test_riddle import CountingHost, media_http, story
+from test_riddle import CountingHost, fc_ok, media_http, story
 from investor_agent.riddle import pipeline as riddle
 
 
 def riddle_app(make_app, mode="draft"):
-    ds = FakeDeepSeek([lambda reg, p: story(reg)])
+    ds = FakeDeepSeek([lambda reg, p: story(reg), fc_ok])
     app = make_app(deepseek=ds, http=media_http(), images=CountingHost())
     app.settings.riddle_publish_mode = mode
     assert riddle.prepare(app, DAY) == "ready"
@@ -1070,7 +1070,7 @@ def test_riddle_and_unicorn_of_the_same_day_are_separate_publications(make_app):
 
 
 def test_growth_off_keeps_the_old_riddle_footer(make_app):
-    ds = FakeDeepSeek([lambda reg, p: story(reg)])
+    ds = FakeDeepSeek([lambda reg, p: story(reg), fc_ok])
     app = make_app(deepseek=ds, http=media_http(), images=CountingHost())
     app.settings.growth_enabled = False
     riddle.prepare(app, DAY)
