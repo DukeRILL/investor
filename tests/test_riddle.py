@@ -28,7 +28,7 @@ def story(registry, videos=3, teaser=None):
     cites = " [S1] [S2] [S3] [S4] [S5] [S6]"
     sections = [{"act": a, "title": f"Заголовок {a}", "body": RU + cites} for a in riddle.ACTS]
     return {
-        "company_name": "Acme", "industry": "логистика", "country": "США", "category": "Логистика",
+        "company_name": "Acme", "website_source": "S2", "industry": "логистика", "country": "США", "category": "Логистика",
         "business_type": "B2B SaaS по подписке",
         "editorial_notes": {"angles": [{"angle": f"Ракурс {i}", "scores": {"surprise": 4, "story": 4, "evidence": 5,
                                                                            "viral": 4}} for i in range(3)], "chosen": 0},
@@ -114,6 +114,7 @@ def test_full_cycle_draft_goes_to_admin_with_12_images_and_3_videos(make_app):
     draft = app.store.draft_get("riddle:2026-11-09")
     assert draft["payload"]["status"]["status"] == "READY"
     assert len(draft["payload"]["manifests"]["youtube"]) == 3
+    assert any(s["id"] == "S2" for s in draft["payload"]["sources"])  # website_source is kept: the preview logo is found on it at publish
     assert riddle.publish(app, "2026-11-09") == "published"
     post = app.telegram.sent[0]
     assert post["chat"] == "111"  # RIDDLE_PUBLISH_MODE defaults to draft: admin chat, never the channel

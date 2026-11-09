@@ -512,6 +512,7 @@ def _prepare(app: App, today: str, company: str | None = None) -> str:
     used = set(registry.cited_ids(*[x.get("body", "") for x in report["sections"]]))
     used |= {str(a.get("source")) for a in (report.get("cis") or {}).get("analogs") or [] if registry.get(str(a.get("source", "")))}
     used |= {m.get("source_id") for m in report.get("videos_resolved") or [] if m.get("source_id")}
+    used |= {str(report["website_source"])} if registry.get(str(report.get("website_source", ""))) else set()  # the logo is found on it at publish time
     sources = registry.brief(sorted((u for u in used if u), key=lambda x: int(x[1:])))
     state = "ready" if status["status"] == "READY" else "blocked"
     app.store.draft_save(draft_key(today), state, {"report": report, "sources": sources, "status": status,
