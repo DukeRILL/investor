@@ -162,8 +162,8 @@ def _bold(size: int):
 
 # Fields of the owner's preview template (preview.jpg, 1199x1312, 2026-11-09): everything is drawn INSIDE them.
 LOGO_BOX = (106, 543, 276, 702)         # white rounded square for the logo
-NAME_BOX = (345, 548, 1110, 700)        # free area right of the logo inside the gold frame
-SECTOR_BOX = (92, 1188, 382, 1232)      # dark field under «СЕКТОР:» (bottom left)
+NAME_BOX = (352, 558, 1102, 690)        # free area right of the separator inside the gold frame (margins keep off the lines)
+SECTOR_BOX = (98, 1193, 372, 1227)      # dark field under «СЕКТОР:» (bottom left), margins keep off the yellow edge
 NAME_INK, SECTOR_INK = "#ffffff", "#ffd414"
 
 
@@ -222,12 +222,14 @@ def render_preview(template: bytes, name: str, sector: str, logo: bytes | None =
     font, lines = _fit_lines(d, name.upper(), NAME_BOX, range(86, 27, -2), 2, _bold)
     line_h = font.size * 1.15
     y = (NAME_BOX[1] + NAME_BOX[3]) / 2 - line_h * (len(lines) - 1) / 2
+    cx = (NAME_BOX[0] + NAME_BOX[2]) / 2
     for line in lines:
-        d.text((NAME_BOX[0], y), line, font=font, fill=NAME_INK, anchor="lm")
+        d.text((cx, y), line, font=font, fill=NAME_INK, anchor="mm")   # centred in the field
         y += line_h
     if sector:
         font, lines = _fit_lines(d, sector, SECTOR_BOX, range(30, 15, -1), 1, _bold)
-        d.text((SECTOR_BOX[0], (SECTOR_BOX[1] + SECTOR_BOX[3]) / 2), lines[0], font=font, fill=SECTOR_INK, anchor="lm")
+        d.text(((SECTOR_BOX[0] + SECTOR_BOX[2]) / 2, (SECTOR_BOX[1] + SECTOR_BOX[3]) / 2), lines[0], font=font, fill=SECTOR_INK,
+               anchor="mm")
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=90, optimize=True)
     return buf.getvalue()
@@ -257,8 +259,13 @@ def find_logo(http: Http, site_url: str) -> bytes | None:
     except (HttpError, OSError):
         pass
     urls.sort(reverse=True)
-    candidates = [u for _, u in urls] + [urljoin(site_url, "/favicon.ico")]
-    for url in candidates[:4]:
+    from urllib.parse import urlparse  # noqa: PLC0415
+    host = (urlparse(site_url).hostname or "").removeprefix("www.")
+    candidates = [u for _, u in urls][:3] + [urljoin(site_url, "/favicon.ico")]
+    if host:  # the site itself may be slow or blocked from the server: public favicon services by domain
+        candidates += [f"https://www.google.com/s2/favicons?domain={host}&sz=256",
+                       f"https://icons.duckduckgo.com/ip3/{host}.ico"]
+    for url in candidates[:6]:
         try:
             data, ctype = http.get_bytes(url, max_bytes=1_000_000, timeout=20)
             if len(data) > 400 and ctype in ("image/png", "image/jpeg", "image/x-icon", "image/vnd.microsoft.icon",
