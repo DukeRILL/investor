@@ -46,11 +46,10 @@ def test_hook_comes_from_the_article_and_differs_between_articles():
 def test_subscribe_block_has_approved_text_and_only_supported_tags():
     nodes = share.subscribe_nodes("https://t.me/+abc")
     text = "\n".join(share._text(n) for n in nodes)
-    assert "Каждый день разбираем бизнес, который смог вырасти до миллиардной оценки." in text
-    assert "Подписывайтесь на канал „🦄 ШКОЛА ЕДИНОРОГОВ“, чтобы находить идеи для собственного бизнеса." in text
-    assert "Подписаться на Школу единорогов" not in text  # no separate link line
-    link = nodes[1]["children"][1]  # the personal link is the channel name itself
-    assert link == {"tag": "a", "attrs": {"href": "https://t.me/+abc"}, "children": ["„🦄 ШКОЛА ЕДИНОРОГОВ“"]}
+    assert "Эту статью прислали вам?" in text and "Каждый день — новый разбор реального бизнеса" in text
+    assert "👉 Подписаться на „🦄 ШКОЛА ЕДИНОРОГОВ“" in text
+    link = nodes[1]["children"][0]["children"][0]  # bold line -> the personal link on the whole call to action
+    assert link == {"tag": "a", "attrs": {"href": "https://t.me/+abc"}, "children": ["👉 Подписаться на „🦄 ШКОЛА ЕДИНОРОГОВ“"]}
     assert {n["tag"] for n in nodes} == {"p"}  # no horizontal rule
 
 
@@ -86,8 +85,11 @@ def test_banner_and_phrase_share_one_personal_invite_link(make_app):
     assert [h for h, _ in hrefs] == ["https://t.me/+inv1", "https://t.me/+inv1"]  # banner image link, phrase link
     assert "img" in hrefs[0][1] and "ШКОЛА ЕДИНОРОГОВ" in hrefs[1][1]
     assert app.telegram.invites == ["telegraph-cta-2026-11-09"]  # one invite link serves both
-    tags = [n.get("tag") for n in nodes]
-    assert tags.index("figure", len(tags) - 6) < tags.index("h4") and "hr" not in tags[-6:]  # banner, block, share
+    texts = [share._text(n) for n in nodes]
+    fig = max(i for i, n in enumerate(nodes) if n.get("tag") == "figure")
+    i_share = next(i for i, t in enumerate(texts) if t.startswith("Было полезно?"))
+    i_sub = next(i for i, t in enumerate(texts) if t.startswith("Эту статью прислали вам?"))
+    assert fig < i_share < i_sub and not any(n.get("tag") == "hr" for n in nodes[fig:])  # banner, share, subscribe
 
 
 def test_republish_and_retry_do_not_duplicate_the_block(make_app):
@@ -539,7 +541,7 @@ def test_crash_after_page_creation_reuses_the_page(make_app):
     assert unicorn.publish(app, DAY) == "published"
     assert len(app.telegraph.pages) == 1
     assert app.store.draft_get(DAY)["page_url"] == "https://telegra.ph/test-page"
-    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Каждый день разбираем бизнес") == 1
+    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Эту статью прислали вам?") == 1
 
 
 def test_failed_page_lookup_never_creates_a_second_page(make_app):
@@ -1036,7 +1038,7 @@ def test_riddle_footer_has_personal_link_subscribe_text_share_and_friend_button(
     assert len(mine) == 3 and "img" in mine[0][1] and "Перейти на канал: t.me/investor_duker" in mine[1][1]
     assert "ШКОЛА ЕДИНОРОГОВ" in mine[2][1]  # banner, the kept channel line (shows the public name), phrase: one link
     assert app.telegram.invites == ["telegraph-cta-riddle-2026-11-09"]
-    assert "Подписывайтесь на канал" in text and "Каждый день разбираем бизнес" in text
+    assert "Эту статью прислали вам?" in text and "👉 Подписаться на „🦄 ШКОЛА ЕДИНОРОГОВ“" in text
     assert "Новые расследования каждый день" not in text and "Перейти на канал" in text  # the old line is replaced
     assert "Поделиться разбором" in text and "t.me/share/url" in text and "vk.com/share.php" in text and "wa.me" in text
     tg = [h for h, _ in anchors(nodes) if h.startswith("https://t.me/share/url")][0]

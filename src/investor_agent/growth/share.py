@@ -4,10 +4,13 @@ from __future__ import annotations
 import re
 from urllib.parse import quote, urlencode
 
-SUBSCRIBE_LINES = ("Каждый день разбираем бизнес, который смог вырасти до миллиардной оценки.",
-                   "Подписывайтесь на канал „🦄 ШКОЛА ЕДИНОРОГОВ“, чтобы находить идеи для собственного бизнеса.")
-LINKED_PHRASE = "„🦄 ШКОЛА ЕДИНОРОГОВ“"  # the personal invite link sits on these words, no separate link line
-SHARE_TITLE = "Поделиться разбором"
+SHARE_INTRO = ("Было полезно? Перешлите разбор тому, кто давно думает о своём деле. "
+               "Одна эта история может стать для него первым шагом.")
+SHARE_LABEL = "👉 Поделиться разбором"
+SHARE_TITLE = "Поделиться разбором"  # the first version of the block had this as a heading
+SUBSCRIBE_INTRO = ("Эту статью прислали вам? Каждый день — новый разбор реального бизнеса: как он вырос до "
+                   "миллиардной оценки и что из этого можно взять себе.")
+SUBSCRIBE_LABEL = "👉 Подписаться на „🦄 ШКОЛА ЕДИНОРОГОВ“"  # the personal invite link sits on this line
 CHANNEL_URL = "https://t.me/investor_duker"
 
 
@@ -63,16 +66,17 @@ def _a(href: str, label: str) -> dict:
 
 
 def subscribe_nodes(href: str) -> list:
-    """The approved text, no horizontal rule. The personal invite link is the channel name inside the phrase (no extra
-    line). Only elements the Telegraph API supports (p, a)."""
-    before, after = SUBSCRIBE_LINES[1].split(LINKED_PHRASE)
-    return [{"tag": "p", "children": [SUBSCRIBE_LINES[0]]},
-            {"tag": "p", "children": [before, _a(href, LINKED_PHRASE), after]}]
+    """Call to action for someone who was sent the article: text + one bold link line with the article's personal
+    invite link. Only elements the Telegraph API supports (p, b, a)."""
+    return [{"tag": "p", "children": [SUBSCRIBE_INTRO]},
+            {"tag": "p", "children": [{"tag": "b", "children": [_a(href, SUBSCRIBE_LABEL)]}]}]
 
 
 def share_nodes(urls: dict[str, str]) -> list:
-    return [{"tag": "h4", "children": [SHARE_TITLE]},
-            {"tag": "p", "children": [_a(urls["telegram"], "Telegram"), " · ", _a(urls["vk"], "VK"), " · ",
+    """Call to action to forward the article: text, a bold label and the three share links."""
+    return [{"tag": "p", "children": [SHARE_INTRO]},
+            {"tag": "p", "children": [{"tag": "b", "children": [SHARE_LABEL]}, {"tag": "br"},
+                                      _a(urls["telegram"], "Telegram"), " · ", _a(urls["vk"], "VK"), " · ",
                                       _a(urls["whatsapp"], "WhatsApp")]}]
 
 
@@ -83,7 +87,20 @@ def _text(node) -> str:
 
 
 def has_share_block(nodes: list) -> bool:
-    return any(isinstance(n, dict) and n.get("tag") == "h4" and _text(n).strip() == SHARE_TITLE for n in nodes)
+    for n in nodes:
+        if isinstance(n, dict) and n.get("tag") == "h4" and _text(n).strip() == SHARE_TITLE:
+            return True  # the first version
+        if isinstance(n, dict) and n.get("tag") == "p" and SHARE_LABEL in _text(n):
+            return True
+    return False
+
+
+def subscribe_index(nodes: list) -> int | None:
+    """Position of the subscribe text, so the share block can be inserted before it (share first, then subscribe)."""
+    for i, n in enumerate(nodes):
+        if isinstance(n, dict) and n.get("tag") == "p" and _text(n).startswith(SUBSCRIBE_INTRO[:22]):
+            return i
+    return None
 
 
 def next_part_url(nodes: list) -> str | None:

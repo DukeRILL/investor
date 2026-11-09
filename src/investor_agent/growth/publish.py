@@ -73,7 +73,9 @@ def ensure_share_block(app, pub: dict, report: dict | None = None) -> bool:
             url = nxt
             continue
         if not share.has_share_block(nodes):
-            app.telegraph.edit_page(url, page.get("title") or pub["company_name"], nodes + share.share_nodes(urls))
+            at = share.subscribe_index(nodes)  # share first, then the subscribe call to action
+            nodes = nodes + share.share_nodes(urls) if at is None else nodes[:at] + share.share_nodes(urls) + nodes[at:]
+            app.telegraph.edit_page(url, page.get("title") or pub["company_name"], nodes)
         gdb.mark_share_done(pub["id"])
         return True
     return False
