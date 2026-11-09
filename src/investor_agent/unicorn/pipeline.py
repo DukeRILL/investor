@@ -429,7 +429,7 @@ CHANNEL_URL = "https://t.me/investor_duker"
 
 def _channel_button() -> dict:
     return {"tag": "p", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
-        {"tag": "strong", "children": ["➡️ Перейти на канал"]}]}]}
+        {"tag": "strong", "children": ["✈️ Перейти на канал"]}, " — ", {"tag": "strong", "children": ["🦄ШКОЛА ЕДИНОРОГОВ. Ежедневные разборы взлетающих бизнесов"]}]}]}
 
 
 def cover_url(app: App) -> str | None:
