@@ -82,9 +82,12 @@ def tally(options: list[str], counts: list[int]) -> list[str]:
 
 def post(app: App, issue: str, options: list[str]) -> int | None:
     """Send the poll for issue `issue` to the channel. Failures go to the admin, never stop the publication."""
-    if app.store.get(poll_key(issue)):
-        return None
     intent = f"unicorn_poll_intent:{issue}"
+    if app.store.get(poll_key(issue)):
+        for leftover in (intent, intent + ":told"):  # a crash after poll_key, before the intent was cleared
+            if app.store.get(leftover):
+                app.store.set(leftover, "")
+        return None
     if app.store.get(intent) == "sending":  # a crash or an unanswered call: it may be in the channel, never repeat
         if app.store.get(intent + ":told") != "1":
             app.store.set(intent + ":told", "1")

@@ -963,3 +963,14 @@ def test_telegraph_transport_errors_are_ambiguous(make_app):
     with pytest.raises(TelegramError) as info:
         TelegraphClient(wire.http, lambda: "tok", lambda t: None).create_page("T", [])
     assert info.value.ambiguous and len(wire.calls) == 1
+
+
+def test_stale_poll_intent_is_cleared_when_poll_key_exists(make_app):
+    app = make_app()
+    app.telegram.send_poll = lambda chat, q, o: 5
+    upoll.post(app, "2026-11-10", ["a", "b"])
+    app.store.set("unicorn_poll_intent:2026-11-10", "sending")  # the crash left the intent behind
+    app.store.set("unicorn_poll_intent:2026-11-10:told", "1")
+    assert unicorn.unresolved_states(app)["poll"] == {"2026-11-10": "sending"}
+    assert upoll.post(app, "2026-11-10", ["a", "b"]) is None
+    assert unicorn.unresolved_states(app)["poll"] == {} and not app.store.get("unicorn_poll_intent:2026-11-10:told")
