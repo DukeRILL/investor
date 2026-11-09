@@ -432,13 +432,13 @@ CHANNEL_URL = "https://t.me/investor_duker"
 LOGO_PATH = COVER_PATH.with_name("tg_button.png")  # 1080x88 button picture: TG logo + channel name
 
 
-def _channel_button(logo: str | None = None) -> list:
+def _channel_button(logo: str | None = None, channel: str = CHANNEL_URL) -> list:
     """Telegraph has no buttons, stretches pictures to the full width, and a link around a picture is not tappable in
     every viewer (the owner saw it dead on a phone). So: the button picture plus a text link right under it."""
-    link = {"tag": "p", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
-        "🦄 Перейти на канал: " + CHANNEL_URL.removeprefix("https://")]}]}
+    link = {"tag": "p", "children": [{"tag": "a", "attrs": {"href": channel}, "children": [
+        "🦄 Перейти на канал: " + channel.removeprefix("https://")]}]}
     if logo:
-        return [{"tag": "figure", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
+        return [{"tag": "figure", "children": [{"tag": "a", "attrs": {"href": channel}, "children": [
             {"tag": "img", "attrs": {"src": logo}}]}]}, link]
     return [link]
 

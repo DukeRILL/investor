@@ -154,3 +154,10 @@ def test_preview_has_name_sector_and_logo():
     img = Image.open(io.BytesIO(with_logo))
     assert img.size == (1080, 1080) and img.getpixel((140, 990)) != Image.open(io.BytesIO(plain)).getpixel((140, 990))
     assert visuals.render_preview(b"junk", "X", "Y") is None
+
+
+def test_riddle_page_ends_with_channel_button():
+    _, nodes = riddle.build_page({"headline": "H", "sections": []}, SourceRegistry(), "9 ноября 2026",
+                                 "https://t.me/investor_duker", None, "https://img/tg.png")
+    flat = [json.dumps(n, ensure_ascii=False) for n in nodes]
+    assert "tg.png" in flat[-2] and "🦄 Перейти на канал" in flat[-1]
