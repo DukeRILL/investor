@@ -10,6 +10,7 @@ Every function returns None instead of raising: a missing picture only makes the
 import base64
 import io
 import logging
+import re
 import textwrap
 
 from ..chart import FONT_PATHS
@@ -213,3 +214,91 @@ def flux_image(http: Http, account: str, token: str, prompt: str) -> bytes | Non
         log.info("flux generation failed: %s", type(exc).__name__)
         return None
     return raw if len(raw) > 8_000 else None
+
+
+# --- post preview: rubric template + company logo, name and sector ----------------------------
+
+BOLD_PATHS = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+              "DejaVuSans-Bold.ttf"]
+GOLD, PREVIEW_INK, PILL = "#ffe08a", "#f7f9fc", "#0f2d57"
+
+
+def _bold(size: int):
+    from PIL import ImageFont  # noqa: PLC0415
+    for path in BOLD_PATHS + FONT_PATHS:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return None
+
+
+def render_preview(template: bytes, name: str, sector: str, logo: bytes | None = None) -> bytes | None:
+    """The rubric picture (1080x1080) with the company logo, name and sector in its free bottom band.
+    Returns JPEG bytes, or None when Pillow or a Cyrillic font is missing (the plain rubric picture is used then)."""
+    try:
+        from PIL import Image, ImageDraw  # noqa: PLC0415
+        img = Image.open(io.BytesIO(template)).convert("RGB").resize((1080, 1080))
+    except Exception:  # noqa: BLE001
+        return None
+    d = ImageDraw.Draw(img)
+    name = " ".join(str(name or "").split()).upper()[:28]
+    sector = " ".join(str(sector or "").split())[:46]
+    if not name or not _bold(10):
+        return None
+    x, top, band = 80, 930, 120
+    if logo:
+        try:
+            mark = Image.open(io.BytesIO(logo)).convert("RGBA")
+            mark.thumbnail((band - 24, band - 24), Image.LANCZOS)
+            d.rounded_rectangle([x, top, x + band, top + band], radius=22, fill="#ffffff")
+            img.paste(mark, (x + (band - mark.width) // 2, top + (band - mark.height) // 2), mark)
+            x += band + 28
+        except Exception:  # noqa: BLE001 - a broken logo file: name and sector alone
+            pass
+    size = 52
+    while size > 30 and d.textlength(name, font=_bold(size)) > 1000 - x:
+        size -= 2
+    d.text((x, top + 6), name, font=_bold(size), fill=GOLD)
+    d.text((x, top + 6 + size + 14), sector, font=_bold(30), fill=PREVIEW_INK)
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=88, optimize=True)
+    return buf.getvalue()
+
+
+_ICON_RE = re.compile(r'<link\b[^>]*rel=["\'][^"\']*(?:apple-touch-icon|icon)[^"\']*["\'][^>]*>', re.I)
+_HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)
+_SIZE_RE = re.compile(r'sizes=["\'](\d+)x', re.I)
+
+
+def find_logo(http: Http, site_url: str) -> bytes | None:
+    """The company's own icon from its site: the largest apple-touch-icon / icon link, then /favicon.ico.
+    PNG/JPEG/ICO only (SVG is skipped). None when nothing usable is found."""
+    from urllib.parse import urljoin  # noqa: PLC0415
+    if not site_url:
+        return None
+    urls: list[tuple[int, str]] = []
+    try:
+        page, ctype = http.get_bytes(site_url, max_bytes=1_500_000, timeout=30)
+        if "html" in ctype:
+            for tag in _ICON_RE.findall(page.decode("utf-8", "ignore")):
+                href = _HREF_RE.search(tag)
+                size = _SIZE_RE.search(tag)
+                if href and not href.group(1).lower().split("?")[0].endswith(".svg"):
+                    bonus = 1000 if "apple-touch" in tag.lower() else 0
+                    urls.append((int(size.group(1)) + bonus if size else bonus, urljoin(site_url, href.group(1))))
+    except (HttpError, OSError):
+        pass
+    urls.sort(reverse=True)
+    candidates = [u for _, u in urls] + [urljoin(site_url, "/favicon.ico")]
+    for url in candidates[:4]:
+        try:
+            data, ctype = http.get_bytes(url, max_bytes=1_000_000, timeout=20)
+            if len(data) > 400 and ctype in ("image/png", "image/jpeg", "image/x-icon", "image/vnd.microsoft.icon",
+                                             "image/webp", "application/octet-stream"):
+                from PIL import Image  # noqa: PLC0415
+                Image.open(io.BytesIO(data)).verify()
+                return data
+        except Exception:  # noqa: BLE001
+            continue
+    return None

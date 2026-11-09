@@ -511,16 +511,31 @@ def cover_url(app: App) -> str | None:
     return _hosted(app, COVER_KEY, COVER_FILE)
 
 
+def preview_url(app: App, report: dict, registry: SourceRegistry) -> str | None:
+    """Post picture (owner's rule, 2026-11-09): the rubric picture with the company's logo, name and sector.
+    Falls back to the plain rubric picture when the preview cannot be drawn or uploaded."""
+    try:
+        site = registry.get(str(report.get("website_source", "")))
+        logo = visuals.find_logo(app.http, site.url) if site else None
+        png = visuals.render_preview(COVER_FILE.read_bytes(), report.get("company_name", ""),
+                                     report.get("category") or report.get("industry") or "", logo)
+        if png:
+            return _uploader(app)(png, "image/jpeg")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("riddle preview failed: %s", type(exc).__name__)
+    return cover_url(app)
+
+
 def header_url(app: App) -> str | None:
     return _hosted(app, HEADER_KEY, HEADER_FILE)
 
 
-def _send_post(app: App, report: dict, date_str: str, url: str) -> int:
+def _send_post(app: App, report: dict, date_str: str, url: str, registry: SourceRegistry) -> int:
     html = build_post(report, date_str, app.settings.telegram_chat_id)
     button = ("🔎 Читать расследование", url)
     chat = app.target_chat(riddle=True)
     top = hero(report)
-    picture = cover_url(app) or (top or {}).get("src")
+    picture = preview_url(app, report, registry) or (top or {}).get("src")
     if picture and visible_len(html) <= CAPTION_LIMIT:
         try:
             return app.telegram.send_photo(chat, picture, html, button=button)
@@ -593,7 +608,7 @@ def publish(app: App, today: str | None = None) -> str:
             app.store.draft_mark(key, "blocked", page_url=url, error="; ".join(status["missing"]))
             app.notify_admin(f"{RUBRIC}: {today} BLOCKED после проверки страницы {url} — " + "; ".join(status["missing"]))
             return "blocked"
-        mid = _send_post(app, report, date_str, url)
+        mid = _send_post(app, report, date_str, url, registry)
     except Exception as exc:  # noqa: BLE001
         app.store.draft_mark(key, "ready", error=str(exc)[:500])
         app.notify_admin(f"{RUBRIC}: публикация {today} не удалась: {exc}")

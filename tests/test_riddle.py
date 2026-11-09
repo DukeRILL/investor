@@ -94,7 +94,7 @@ def test_full_cycle_draft_goes_to_admin_with_12_images_and_3_videos(make_app):
     assert riddle.publish(app, "2026-11-09") == "published"
     post = app.telegram.sent[0]
     assert post["chat"] == "111"  # RIDDLE_PUBLISH_MODE defaults to draft: admin chat, never the channel
-    assert post["photo"] == app.store.get("riddle_cover_url")  # the rubric cover, uploaded once
+    assert post["photo"].startswith("https://res.cloudinary.com/test/")  # rubric picture + company name, sector, logo
     assert post["html"].startswith("<b>Раздел:</b> Логистика · <b>Тип:</b> B2B SaaS по подписке\n")
     assert post["button"] == ("🔎 Читать расследование", "https://telegra.ph/test-page")
     assert "РАЗГАДКА БИЗНЕСА" in post["html"] and "Время чтения:" in post["html"] and "ТЕСТИРОВАТЬ" not in post["html"]
@@ -139,3 +139,18 @@ def test_scheduler_has_riddle_at_11_moscow(make_app):
     retry = sch._riddle_retry("blocked", datetime(2026, 11, 9, 3, 30, tzinfo=BEIJING))
     assert retry.hour == 6
     assert sch._riddle_retry("failed", datetime(2026, 11, 9, 11, 0, tzinfo=BEIJING)) is None
+
+
+def test_preview_has_name_sector_and_logo():
+    import io
+    from PIL import Image
+    from investor_agent.riddle import visuals
+    template = io.BytesIO()
+    Image.new("RGB", (1080, 1080), "#031a46").save(template, "PNG")
+    logo = io.BytesIO()
+    Image.new("RGB", (96, 96), "#ff6900").save(logo, "PNG")
+    plain = visuals.render_preview(template.getvalue(), "Xiaomi", "Электроника", None)
+    with_logo = visuals.render_preview(template.getvalue(), "Xiaomi", "Электроника", logo.getvalue())
+    img = Image.open(io.BytesIO(with_logo))
+    assert img.size == (1080, 1080) and img.getpixel((140, 990)) != Image.open(io.BytesIO(plain)).getpixel((140, 990))
+    assert visuals.render_preview(b"junk", "X", "Y") is None
