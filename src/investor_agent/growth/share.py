@@ -6,6 +6,7 @@ from urllib.parse import quote, urlencode
 
 SUBSCRIBE_LINES = ("Каждый день разбираем бизнес, который смог вырасти до миллиардной оценки.",
                    "Подписывайтесь на „Школу единорогов“, чтобы находить идеи для собственного бизнеса.")
+SUBSCRIBE_LABEL = "Подписаться на Школу единорогов"
 SHARE_TITLE = "Поделиться разбором"
 CHANNEL_URL = "https://t.me/investor_duker"
 
@@ -61,12 +62,12 @@ def _a(href: str, label: str) -> dict:
     return {"tag": "a", "attrs": {"href": href}, "children": [label]}
 
 
-def subscribe_nodes() -> list:
-    """The approved text only (the call to action with the link is the channel banner at the end of the article).
-    Only elements the Telegraph API supports (hr, p)."""
+def subscribe_nodes(href: str) -> list:
+    """Only elements the Telegraph API supports (hr, p, b, a)."""
     return [{"tag": "hr"},
             {"tag": "p", "children": [SUBSCRIBE_LINES[0]]},
-            {"tag": "p", "children": [SUBSCRIBE_LINES[1]]}]
+            {"tag": "p", "children": [SUBSCRIBE_LINES[1]]},
+            {"tag": "p", "children": [{"tag": "b", "children": [_a(href, SUBSCRIBE_LABEL + " →")]}]}]
 
 
 def share_nodes(urls: dict[str, str]) -> list:
