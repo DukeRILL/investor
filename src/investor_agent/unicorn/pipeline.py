@@ -427,7 +427,7 @@ COVER_PATH = Path(__file__).resolve().parents[3] / "assets" / "unicorn_cover.jpg
 CHANNEL_URL = "https://t.me/investor_duker"
 
 
-LOGO_PATH = COVER_PATH.with_name("tg_button.png")  # 1080x220 button picture: TG logo + channel name
+LOGO_PATH = COVER_PATH.with_name("tg_button.png")  # 1080x88 button picture: TG logo + channel name
 
 
 def _channel_button(logo: str | None = None) -> list:
