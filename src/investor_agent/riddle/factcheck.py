@@ -12,6 +12,7 @@ import re
 from ..app import App
 from ..sources import SourceRegistry
 from ..timeutil import PeakHoursError
+from ..typesafe import Jev
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +22,20 @@ MAX_TOOL_CALLS = 40
 MAX_RECHECK_CALLS = 20
 SCALE_TOLERANCE = 0.03    # 457.3 vs 457 is rounding; 4,573 vs 457.3 is a tenfold error
 PERCENT_TOLERANCE = 0.15  # percentage points
+# TypeSafe Jev, the second independent judge (owner, 2026-11-09 15:48 UTC): a VERIFIED claim stays VERIFIED only when
+# Jev says the source quote supports it with high probability and confidence.
+JEV_MIN_SUPPORT = 0.80
+JEV_MIN_CONFIDENCE = 0.60
+JEV_CONTRADICTED = 0.50
+JEV_CRITERIA = {
+    "supported": "The source excerpt states the same fact as the claim: the same value at the same scale, unit, "
+                 "currency, reporting period, metric and company or segment (allowing only rounding and translation).",
+    "contradicted": "The source excerpt states a different value, scale, unit, period, metric, segment or fact.",
+    "insufficient": "The excerpt does not contain enough information to confirm or refute the claim.",
+}
+JEV_INSTRUCTIONS = ("A Russian business article makes the CLAIM below; the EXCERPT is copied from the cited source. "
+                    "Does the excerpt prove the claim? Units: 1 亿 = 100 million; млн = million; млрд = billion; "
+                    "юаней = yuan. Gross, operating, net and adjusted profit are different metrics.")
 
 # order matters: longer / more specific markers first
 _SCALES = [("трлн", 1e12), ("trillion", 1e12), ("млрд", 1e9), ("миллиард", 1e9), ("billion", 1e9), ("bn", 1e9),
@@ -239,11 +254,71 @@ def run(app: App, report: dict, registry: SourceRegistry) -> dict:
             if c.get("fixed") and cid not in rechecked:
                 c["status"], c["note"] = "UNVERIFIED", "исправление не прошло повторную проверку"
         claims = list(by_id.values())
+    jev_note = judge_with_jev(app, claims, registry)
     report["fact_ledger"] = claims
     out = summary(claims)
+    out["jev"] = jev_note
+    if jev_note.get("error"):
+        out["open"].append(f"проверка TypeSafe Jev не выполнена: {jev_note['error']}")
     log.info("riddle fact check: %s claims, %s verified, %s errors found, %s fixed, %s open",
              out["checked"], out["verified"], out["errors_found"], out["fixed"], len(out["open"]))
     return out
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip().lower()
+
+
+def judge_with_jev(app: App, claims: list[dict], registry: SourceRegistry) -> dict:
+    """Second independent check: every material VERIFIED claim with its source quote goes to TypeSafe Jev (choice
+    supported / contradicted / insufficient with probabilities and confidence). Anything short of a confident
+    «supported» is no longer VERIFIED. The quote must really be on the opened page."""
+    s = app.settings
+    jev = Jev(app.http, s.typesafe_api_key, s.typesafe_url, s.typesafe_model)
+    todo = [c for c in claims if c.get("material") and c.get("status") == "VERIFIED"]
+    if not todo:
+        return {"checked": 0}
+    if not jev.enabled:
+        return {"checked": 0, "error": "нет TYPESAFE_API_KEY"}
+    checked = failed = 0
+    for c in todo:
+        quote = str(c.get("source_quote") or "").strip()
+        src = registry.get(str(c.get("source") or "")) or registry.get(str(c.get("source_url") or ""))
+        if not quote:
+            c["status"], c["note"] = "UNVERIFIED", "нет точной выдержки из источника для независимой проверки"
+            failed += 1
+            continue
+        if src and src.content and _squash(quote) not in _squash(src.content):
+            c["status"], c["note"] = "UNVERIFIED", "выдержки нет на открытой странице источника"
+            failed += 1
+            continue
+        state = (f"CLAIM: {c.get('text', '')}\n"
+                 f"VALUE IN ARTICLE: {c.get('article_value', '')} {c.get('article_unit', '')}\n"
+                 f"SOURCE: {(src.url if src else c.get('source_url', ''))} (period {c.get('period', '')})\n"
+                 f"SOURCE VALUE: {c.get('source_value', '')} {c.get('source_unit', '')}\n"
+                 f"EXCERPT: {quote[:3000]}")
+        try:
+            answer = jev.choice(state, JEV_INSTRUCTIONS, JEV_CRITERIA, qid=c["id"])
+        except Exception as exc:  # noqa: BLE001 - one failed call: the claim is not independently confirmed
+            log.warning("jev check failed for %s: %s", c["id"], type(exc).__name__)
+            c["status"], c["note"] = "UNVERIFIED", f"TypeSafe Jev не ответил ({type(exc).__name__})"
+            failed += 1
+            continue
+        checked += 1
+        probs = answer["probabilities"]
+        c["jev"] = {"choice": answer["choice"], "supported": round(probs.get("supported", 0.0), 3),
+                    "confidence": round(answer["confidence"], 3), "model": answer["model"]}
+        if answer["choice"] == "supported" and probs.get("supported", 0.0) >= JEV_MIN_SUPPORT \
+                and answer["confidence"] >= JEV_MIN_CONFIDENCE:
+            continue
+        failed += 1
+        if probs.get("contradicted", 0.0) >= JEV_CONTRADICTED:
+            c["status"], c["note"] = "ERROR", f"TypeSafe Jev: источник противоречит (p={probs.get('contradicted', 0):.2f})"
+        else:
+            c["status"], c["note"] = "UNVERIFIED", (f"TypeSafe Jev: не подтверждено уверенно (supported="
+                                                    f"{probs.get('supported', 0):.2f}, confidence={answer['confidence']:.2f})")
+    log.info("jev: %s claims judged, %s not confirmed", checked, failed)
+    return {"checked": checked, "not_confirmed": failed}
 
 
 # --- published page vs verified text (§19) -------------------------------------------------------

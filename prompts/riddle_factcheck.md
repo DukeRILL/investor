@@ -25,9 +25,10 @@ Be thorough on numbers and quotes, economical on searches: open the filings and 
   {"id": "C1", "field": "sections[2].body", "text": "the claim as printed (short)", "kind": "amount|percent|count|date|quote|bio|deal|leadership|reason|other",
    "material": true, "source": "S4", "source_url": "https://…", "period": "2025",
    "source_value": "457.3", "source_unit": "billion yuan", "article_value": "457,3", "article_unit": "млрд юаней",
+   "source_quote": "the exact sentence or table row from the opened source that proves it, copied character for character (original language)",
    "status": "VERIFIED|ERROR|UNVERIFIED", "note": "one short Russian line: what was checked or what is wrong",
    "fix": {"find": "…", "replace": "…"}}
 ], "checked_sources": ["S4", "S7"]}
 ```
-`fix` is null for VERIFIED claims. `source_value` / `article_value` are the bare numbers as printed (no unit); leave them empty for non-numeric claims.
+`source_quote` is required for every VERIFIED claim: copy it exactly from the page you opened (it is checked against the page text and then judged by a second, independent model — a paraphrase or an invented quote fails). `fix` is null for VERIFIED claims. `source_value` / `article_value` are the bare numbers as printed (no unit); leave them empty for non-numeric claims.
 When `recheck` is given, check ONLY those claims in the corrected text and return them the same way.

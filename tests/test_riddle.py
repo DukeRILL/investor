@@ -60,7 +60,7 @@ def fc_ok(reg, payload):
     assert "article" in payload and payload["article"]["sections"]
     return {"claims": [{"id": "C1", "field": "headline", "text": "миллиард", "kind": "amount", "material": True,
                         "source": "S1", "source_value": "1", "source_unit": "billion USD", "article_value": "1",
-                        "article_unit": "млрд долларов", "status": "VERIFIED", "fix": None}]}
+                        "article_unit": "млрд долларов", "source_quote": "content", "status": "VERIFIED", "fix": None}]}
 
 
 def media_http():
@@ -228,7 +228,7 @@ def test_fact_check_gate_fixes_tenfold_error_and_blocks_open_claims(make_app):
         assert p["recheck"][0]["id"] == "C1" and "369 млн юаней [S1]" in json.dumps(p["article"], ensure_ascii=False)
         return {"claims": [{"id": "C1", "field": "sections[0].body", "text": "выручка", "material": True, "source": "S1",
                             "source_value": "369", "source_unit": "млн юаней", "article_value": "369",
-                            "article_unit": "млн юаней", "status": "VERIFIED"}]}
+                            "article_unit": "млн юаней", "source_quote": "content", "status": "VERIFIED"}]}
 
     app = make_app(deepseek=FakeDeepSeek([lambda reg, p: story(reg), wrong, recheck]), http=media_http(),
                    images=CountingHost())
@@ -249,3 +249,29 @@ def test_published_page_must_match_verified_numbers():
     report = {"verified_numbers": ["457.3", "369"], "fact_check": {"checked": 3, "open": []}}
     status = riddle.publication_status(report, (12, 3, "Выручка 457,3 млрд, первая партия на 3,7 млрд"))
     assert any("нет чисел: 369" in m for m in status["missing"])
+
+
+def test_typesafe_jev_must_confirm_verified_claims(make_app):
+    http = media_http()
+    http.jev = lambda body: {"type": "choice", "choice": "contradicted", "confidence": 0.8,
+                             "probabilities": {"supported": 0.1, "contradicted": 0.85, "insufficient": 0.05}}
+    app = make_app(deepseek=FakeDeepSeek([lambda reg, p: story(reg), fc_ok]), http=http, images=CountingHost())
+    assert riddle.prepare(app, "2026-11-09") == "blocked"
+    body = http.jev_calls[0]
+    assert body["model"] == "jev-latest" and "EXCERPT: content" in body["state"]
+    assert set(body["questions"]["C1"]["criteria"]) == {"supported", "contradicted", "insufficient"}
+    ledger = app.store.draft_get("riddle:2026-11-09")["payload"]["report"]["fact_ledger"]
+    assert ledger[0]["status"] == "ERROR" and ledger[0]["jev"]["choice"] == "contradicted"
+
+    def invented(reg, p):  # a quote that is not on the opened page never reaches READY
+        claim = fc_ok(reg, p)
+        claim["claims"][0]["source_quote"] = "Revenue was 1 billion dollars"
+        return claim
+    app = make_app(deepseek=FakeDeepSeek([lambda reg, p: story(reg), invented]), http=media_http(), images=CountingHost())
+    assert riddle.prepare(app, "2026-11-10") == "blocked"
+    assert "выдержки нет на открытой странице" in app.telegram.sent[-1]["html"]
+
+    app = make_app(deepseek=FakeDeepSeek([lambda reg, p: story(reg), fc_ok]), http=media_http(), images=CountingHost())
+    app.settings.typesafe_api_key = ""
+    assert riddle.prepare(app, "2026-11-11") == "blocked"
+    assert "нет TYPESAFE_API_KEY" in app.telegram.sent[-1]["html"]

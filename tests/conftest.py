@@ -156,7 +156,7 @@ class FakeDeepSeek:
 def make_app(tmp_path):
     def _make(deepseek=None, telegram=None, mode="auto", admin="111", http=None, images=None):
         settings = Settings(database_path=tmp_path / "db.sqlite3", publish_mode=mode, telegram_admin_chat_id=admin,
-                            deepseek_api_key="k", telegram_bot_token="t", growth_enabled=True)
+                            deepseek_api_key="k", telegram_bot_token="t", growth_enabled=True, typesafe_api_key="ts")
         return App(settings=settings, http=http, store=Store(settings.database_path),
                    deepseek=deepseek or FakeDeepSeek([]), telegram=telegram or FakeTelegram(),
                    telegraph=FakeTelegraph(), images=images)
@@ -175,6 +175,19 @@ class FakeHttp:
 
     def head(self, url, timeout=15):
         return 200 if url not in getattr(self, "dead", set()) else 404
+
+    def request(self, method, url, *, json_body=None, params=None, headers=None, timeout=60, retry=True, retries=None):
+        """Only TypeSafe Jev is scripted: `self.jev(body) -> answer dict`; by default a confident «supported»."""
+        from investor_agent.http import HttpError
+        if "typesafe" not in url:
+            raise HttpError(404, "not scripted")
+        self.jev_calls = getattr(self, "jev_calls", []) + [json_body]
+        qid = next(iter(json_body["questions"]))
+        answer = getattr(self, "jev", None)
+        answer = answer(json_body) if answer else {"type": "choice", "choice": "supported", "confidence": 0.9,
+                                                  "probabilities": {"supported": 0.95, "contradicted": 0.03,
+                                                                    "insufficient": 0.02}}
+        return {"model": "jev-1.13.0", "answers": {qid: answer}, "usage": {"input_tokens": 1, "output_tokens": 1}}
 
     def get_bytes(self, url, max_bytes=6_000_000, timeout=30):
         from investor_agent.http import HttpError

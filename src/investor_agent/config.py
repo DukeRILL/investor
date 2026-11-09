@@ -31,6 +31,9 @@ class Settings(BaseModel):
     pixabay_api_key: str = ""          # stock photos for «Разгадка бизнеса» (optional)
     cloudflare_account_id: str = ""    # FLUX illustrations for «Разгадка бизнеса» (optional, last resort)
     cloudflare_api_token: str = ""
+    typesafe_api_key: str = ""         # TypeSafe Jev: second fact check of «Разгадка бизнеса» after DeepSeek
+    typesafe_url: str = "https://api.typesafe.ai/v1/systemone"
+    typesafe_model: str = "jev-latest"
     # growth statistics (docs/GROWTH.md)
     growth_enabled: bool = False  # opt-in: GROWTH_ENABLED=1
     trust_proxy: bool = False  # take the client IP for /go from X-Forwarded-For only behind your own proxy
