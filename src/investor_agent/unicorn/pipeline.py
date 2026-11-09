@@ -431,13 +431,14 @@ LOGO_PATH = COVER_PATH.with_name("tg_button.png")  # 1080x220 button picture: TG
 
 
 def _channel_button(logo: str | None = None) -> list:
-    """Telegraph has no buttons and stretches pictures to the full width, so the button is a ready-made wide
-    picture that links to the channel; without the picture - a plain bold link."""
+    """Telegraph has no buttons, stretches pictures to the full width, and a link around a picture is not tappable in
+    every viewer (the owner saw it dead on a phone). So: the button picture plus a text link right under it."""
+    link = {"tag": "p", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
+        {"tag": "strong", "children": ["👉 Перейти на канал: " + CHANNEL_URL.removeprefix("https://")]}]}]}
     if logo:
         return [{"tag": "figure", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
-            {"tag": "img", "attrs": {"src": logo}}]}]}]
-    return [{"tag": "p", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
-        {"tag": "strong", "children": ["Перейти на канал — 🦄ШКОЛА ЕДИНОРОГОВ. Ежедневные разборы взлетающих бизнесов"]}]}]}]
+            {"tag": "img", "attrs": {"src": logo}}]}]}, link]
+    return [link]
 
 
 def logo_url(app: App) -> str | None:

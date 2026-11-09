@@ -377,4 +377,4 @@ def test_cover_goes_first_and_file_is_light():
 def test_channel_button_under_cover_and_at_end():
     reg = SourceRegistry()
     _, nodes = unicorn.build_page(_report_with_media(reg), reg, "9 ноября 2026", "https://img/cover.jpg", "https://img/tg.png")
-    assert "t.me/investor_duker" in json.dumps(nodes[1]) and "tg.png" in json.dumps(nodes[1]) and "t.me/investor_duker" in json.dumps(nodes[-1]) and "tg.png" in json.dumps(nodes[-1])
+    assert "t.me/investor_duker" in json.dumps(nodes[1]) and "tg.png" in json.dumps(nodes[1]) and "t.me/investor_duker" in json.dumps(nodes[-1]) and nodes[-1]["tag"] == "p"
