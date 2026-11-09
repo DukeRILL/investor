@@ -22,6 +22,7 @@ class Settings(BaseModel):
     radar_publish_mode: str = "draft"  # Invest Radar only; Unicorn School follows publish_mode
     riddle_publish_mode: str = "draft"  # «Разгадка бизнеса»: admin chat until the owner switches it to auto
 
+    vk_n8n_webhook_secret: str = ""    # sent as X-Webhook-Secret (n8n header-auth credential)
     vk_n8n_webhook_url: str = ""       # n8n webhook that publishes the VK post (empty = VK branch off)
     fred_api_key: str = ""
     cloudinary_cloud_name: str = ""

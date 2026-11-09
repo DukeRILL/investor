@@ -642,7 +642,8 @@ def _send_vk(app: App, draft_payload: dict, day: str, url: str) -> None:
     try:
         app.http.request("POST", hook, json_body={
             "guid": f"riddle-{day}", "text": post["text"], "article_url": url, "channel_url": channel_url(app),
-            "company": draft_payload["report"].get("company_name"), "cover_url": cover_url(app)}, retry=False, timeout=30)
+            "company": draft_payload["report"].get("company_name"), "cover_url": cover_url(app)},
+                         headers={"X-Webhook-Secret": app.settings.vk_n8n_webhook_secret}, retry=False, timeout=30)
     except Exception as exc:  # noqa: BLE001
         log.warning("riddle vk handoff failed: %s", type(exc).__name__)
         app.notify_admin(f"{RUBRIC}: VK-ветка не получила выпуск {day}: {type(exc).__name__}")
