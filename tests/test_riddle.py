@@ -9,7 +9,8 @@ from investor_agent.scheduler import RIDDLE_PUBLISH_TIME, Scheduler
 from investor_agent.sources import SourceRegistry
 from investor_agent.timeutil import BEIJING
 
-RU = "Основатели заметили дорогую проблему клиентов и превратили её в повторяющиеся продажи. " * 12
+RU = "Основатели заметили дорогую проблему клиентов и превратили её в повторяющиеся продажи. " * 30
+RU_CIS = "Близкие аналоги в России решают похожую задачу, но для другого клиента и с другой моделью оплаты. " * 8
 JPEG = b"\xff\xd8" + b"x" * 9000
 
 
@@ -25,8 +26,8 @@ def story(registry, videos=3, teaser=None):
     for i in range(10):
         src = registry.add(f"https://site{i}.com/a", f"Title {i}", f"Pub{i}")
         registry.mark_fetched(src.id, src.title, "content")
-    cites = " [S1] [S2] [S3] [S4] [S5] [S6]"
-    sections = [{"act": a, "title": f"Заголовок {a}", "body": RU + cites} for a in riddle.ACTS]
+    cites = " [S1] [S2] [S3] [S4] [S5] [S6] [S7]"
+    sections = [{"act": a, "title": f"Заголовок {a}", "body": (RU_CIS if a == "cis" else RU) + cites} for a in riddle.ACTS]
     return {
         "company_name": "Acme", "website_source": "S2", "industry": "логистика", "country": "США", "category": "Логистика",
         "business_type": "B2B SaaS по подписке",
@@ -35,7 +36,7 @@ def story(registry, videos=3, teaser=None):
         "concept": {"riddle": "Как скучная накладная стала бизнесом на миллиард?",
                     "headlines": [{"mechanic": m, "text": m} for m in ("парадокс", "скрытый механизм", "неожиданное решение")]},
         "discussion_question": "Вы бы отказались от наценки ради экосистемы?",
-        "quality": {"interest": 9, "substance": 8, "clarity": 9, "no_repeats": 9, "shareability": 8, "repeats_found": False},
+        "quality": {"interest": 9, "depth": 8, "mindset": 9, "analytics": 9, "clarity": 9, "shareability": 8, "repeats_found": False},
         "headline": "Как скучная накладная стала бизнесом на миллиард",
         "teaser": teaser if teaser is not None else "Компания Acme зарабатывает на том, что все считали скучным. " * 9,
         "sections": sections,
@@ -87,7 +88,7 @@ def test_validate_story_rules():
 def test_new_master_prompt_rules():
     reg = SourceRegistry()
     weak = story(reg)
-    weak["quality"] = {"interest": 7, "substance": 7, "clarity": 8, "no_repeats": 6, "shareability": 7, "repeats_found": True}
+    weak["quality"] = {"interest": 7, "depth": 7, "mindset": 7, "analytics": 7, "clarity": 8, "shareability": 7, "repeats_found": True}
     weak["editorial_notes"]["angles"] = weak["editorial_notes"]["angles"][:1]
     weak["discussion_question"] = ""
     errors = " | ".join(riddle.validate_story(weak, reg))
@@ -96,13 +97,13 @@ def test_new_master_prompt_rules():
     long = story(SourceRegistry())
     long["sections"][3]["body"] += " слово" * 4000  # too long and over the 20-minute ceiling
     errors = " | ".join(riddle.validate_story(long, SourceRegistry()))
-    assert "at most 1,600" in errors and "limit is 20" in errors
+    assert "need 2,700–3,200" in errors and "required 15–20" in errors
     plan = story(SourceRegistry())
     plan["sections"][7]["body"] += " план" * 300  # the CIS block is not a business plan
     plan["cis"]["analogs"] *= 2
     errors = " | ".join(riddle.validate_story(plan, SourceRegistry()))
     assert "cis section has" in errors and "at most 3" in errors
-    assert riddle.quality_score(story(SourceRegistry())) == 8.65
+    assert riddle.quality_score(story(SourceRegistry())) == 8.7
 
 
 def test_full_cycle_draft_goes_to_admin_with_12_images_and_3_videos(make_app):

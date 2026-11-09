@@ -20,7 +20,7 @@ from ..quality import is_russian, strip_meta_notes
 from ..sources import CITE_RE, SourceRegistry
 from ..storage import norm_name
 from ..telegram import TelegramError
-from ..textfmt import reading_line, reading_minutes, text_to_nodes, visible_len
+from ..textfmt import minutes_ru, text_to_nodes, visible_len
 from ..timeutil import PeakHoursError, now_bj, ru_date
 from ..unicorn.pipeline import _channel_button, _figure, logo_url, _interleave, _registry_from, _uploader, create_pages
 from ..unicorn.precheck import image_alive, video_alive
@@ -36,15 +36,16 @@ VIDEO_PLACE = {"founders": "before", "product": "turn", "market": "solution"}
 MIN_IMAGES = 12      # §12: at least 12 different images inside the published article
 MAX_IMAGES = 16
 MIN_VIDEOS = 3       # §13: at least 3 different working YouTube videos inside the article
-MIN_WORDS, MAX_WORDS = 900, 1700   # §15: 1,000–1,400 words, up to 1,600; a little slack both ways
-MAX_READ_MINUTES = 20              # owner's rule: the whole page reads in no more than 20 minutes
-MIN_SECTION_WORDS = 40
-CIS_WORDS = (70, 230)              # §11: the CIS block is about 100–180 words
+MIN_WORDS, MAX_WORDS = 2400, 3700   # §15 (08:28 UTC edition): target 2,700–3,200 words; slack both ways, the reading time rules
+MIN_READ_MINUTES, MAX_READ_MINUTES = 15.0, 20.0   # owner's rule: words / 180 + 1.5 (12 images) + 0.1 per image above 12
+READ_WPM = 180
+MIN_SECTION_WORDS = 120
+CIS_WORDS = (100, 210)             # §11: the CIS block is about 120–180 words
 MAX_ANALOGS = 3
-MIN_SOURCES = 5
-MAX_PUBLIC_SOURCES = 8             # §19: 5–8 key sources in the public list
+MIN_SOURCES = 7
+MAX_PUBLIC_SOURCES = 10            # §19: 6–10 key sources in the public list
 MIN_QUALITY = 8.0                  # §20: weighted editorial score; below it, or with repeats, the issue is sent back
-QUALITY_WEIGHTS = {"interest": 0.30, "substance": 0.25, "clarity": 0.20, "no_repeats": 0.15, "shareability": 0.10}
+QUALITY_WEIGHTS = {"interest": 0.20, "depth": 0.20, "mindset": 0.20, "analytics": 0.20, "clarity": 0.10, "shareability": 0.10}
 TEASER_MIN, TEASER_MAX = 350, 700  # §17: about 400–650 characters
 CAPTION_LIMIT = 1000
 SEARCH_CACHE_HOURS = 24
@@ -147,12 +148,13 @@ def validate_story(report: dict, registry: SourceRegistry, excluded: set[str] = 
     text = "\n".join(s.get("body", "") for s in acts.values())
     words = _words(text)
     if words < MIN_WORDS:
-        errors.append(f"the story has {words} words, need 1,000–1,400: add facts, events and explanations, not filler")
+        errors.append(f"the story has {words} words, need 2,700–3,200: deepen the episodes with confirmed facts, decisions and "
+                      "actions of the founders, not with filler")
     elif words > MAX_WORDS:
-        errors.append(f"the story has {words} words, need 1,000–1,400 (at most 1,600): cut repeats and secondary details")
-    minutes = reading_minutes(article_text(report))
-    if minutes > MAX_READ_MINUTES:
-        errors.append(f"the page reads for {minutes} minutes, the limit is {MAX_READ_MINUTES}: cut the text")
+        errors.append(f"the story has {words} words, need 2,700–3,200: cut repeats and secondary chronology, keep the founders' thinking")
+    minutes = read_minutes(report)
+    if not MIN_READ_MINUTES <= minutes <= MAX_READ_MINUTES:
+        errors.append(f"the page reads for {minutes} minutes (words/180 + 1.5 for 12 images), required 15–20")
     cis_words = _words((acts.get("cis") or {}).get("body", ""))
     if acts.get("cis") and not (CIS_WORDS[0] <= cis_words <= CIS_WORDS[1]):
         errors.append(f"the cis section has {cis_words} words, need 100–180")
@@ -187,7 +189,7 @@ def validate_story(report: dict, registry: SourceRegistry, excluded: set[str] = 
 
 
 def quality_score(report: dict) -> float | None:
-    """§20: 0.30·interest + 0.25·substance + 0.20·clarity + 0.15·no_repeats + 0.10·shareability (internal)."""
+    """§20: 0.20·interest + 0.20·depth + 0.20·mindset + 0.20·analytics + 0.10·clarity + 0.10·shareability (internal)."""
     q = report.get("quality") or {}
     try:
         return round(sum(float(q[k]) * w for k, w in QUALITY_WEIGHTS.items()), 2)
@@ -416,9 +418,18 @@ def count_page_media(nodes: list, ignore: set[str] = frozenset()) -> tuple[int, 
     return len(imgs), len(vids)
 
 
+def read_minutes(report: dict, n_images: int | None = None) -> float:
+    """Owner's model (2026-11-09): words / 180 + 1.5 min for studying 12 images, +0.1 per content image above 12.
+    Counts the headline, section texts and meaningful captions; not notes, manifests, sources or video watch time."""
+    n = n_images if n_images is not None else max(12, len(report.get("images") or []))
+    words = len(re.findall(r"\w+", re.sub(r"\[S\d+\]", " ", article_text(report))))
+    return round(words / READ_WPM + 1.5 + 0.1 * max(0, n - 12), 1)
+
+
 def article_text(report: dict) -> str:
     """Everything the reader gets on the page, for the reading time (and the 20-minute ceiling)."""
-    parts = [s.get("body", "") for s in report.get("sections") or [] if isinstance(s, dict)]
+    parts = [str(report.get("headline") or "")]
+    parts += [s.get("title", "") + "\n" + s.get("body", "") for s in report.get("sections") or [] if isinstance(s, dict)]
     cis = report.get("cis") or {}
     parts += [" ".join(str(a.get(k, "")) for k in ("name", "essence", "similarity", "difference"))
               for a in cis.get("analogs") or [] if isinstance(a, dict)]
@@ -434,12 +445,15 @@ def build_post(report: dict, date_str: str, channel_name: str = "", question: bo
     return (f"<b>{escape(report['headline'])}</b>\n\n"
             f"{escape(report.get('teaser', ''))}\n\n"
             + (f"💬 <i>{escape(q)}</i>\n\n" if q and question else "")
-            + reading_line(article_text(report)))
+            + f"⏱ Время чтения: {minutes_ru(max(1, round(read_minutes(report))))}")
 
 
 def publication_status(report: dict, page_check: tuple[int, int] | None = None) -> dict:
     """I. PUBLICATION STATUS."""
     missing = media_problems(report)
+    minutes = read_minutes(report)
+    if not MIN_READ_MINUTES <= minutes <= MAX_READ_MINUTES:
+        missing.append(f"расчётное время чтения {minutes} мин, нужно 15–20")
     if page_check is not None:
         img, vid = page_check
         if img < MIN_IMAGES:
