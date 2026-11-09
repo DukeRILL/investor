@@ -246,8 +246,8 @@ def test_fact_check_gate_fixes_tenfold_error_and_blocks_open_claims(make_app):
 
 
 def test_published_page_must_match_verified_numbers():
-    report = {"verified_numbers": ["457.3", "369"], "fact_check": {"checked": 3, "open": []}}
-    status = riddle.publication_status(report, (12, 3, "Выручка 457,3 млрд, первая партия на 3,7 млрд"))
+    report = {"verified_numbers": ["457.3", "369"], "verified_title_numbers": [], "fact_check": {"checked": 3, "open": []}}
+    status = riddle.publication_status(report, (12, 3, "Выручка 457,3 млрд, первая партия на 3,7 млрд", "Разгадка бизнеса: Xiaomi"))
     assert any("нет чисел: 369" in m for m in status["missing"])
 
 
@@ -275,3 +275,118 @@ def test_typesafe_jev_must_confirm_verified_claims(make_app):
     app.settings.typesafe_api_key = ""
     assert riddle.prepare(app, "2026-11-11") == "blocked"
     assert "нет TYPESAFE_API_KEY" in app.telegram.sent[-1]["html"]
+
+
+# --- Codex review of e08cebc: release blockers ---------------------------------------------------------
+def _claim(**kw):
+    base = {"id": "C1", "field": "sections[0].body", "text": "выручка", "kind": "amount", "material": True,
+            "source": "S1", "source_value": "369", "source_unit": "млн юаней", "article_value": "369",
+            "article_unit": "млн юаней", "source_quote": "content", "status": "VERIFIED"}
+    return {**base, **kw}
+
+
+def test_number_parsing_is_explicit_about_locale():
+    import pytest
+    from investor_agent.factgate import NumberError, number, scale_problem
+    assert number("1 999") == 1999 and number("1\u00a0999") == 1999 and number("4573亿") == 4573
+    assert number("1,234,567") == 1234567 and number("1.234.567") == 1234567
+    assert number("4.573,0") == 4573 and number("4,573.0") == 4573 and number("457,3") == 457.3
+    assert number("1,999", "source") == 1999 and number("1,999", "article") == 1.999  # locale decided by the side
+    assert number("n/a") is None
+    for bad in ("1,999", "1,2,3", "1.234,56,7"):
+        with pytest.raises(NumberError):
+            number(bad)
+    # an unreadable digit string is a problem, never a silent skip
+    assert "неоднозначная" in scale_problem({"source_value": "1,2,3", "source_unit": "", "article_value": "5",
+                                              "article_unit": ""})
+    # tenfold error with a thousands-grouped source number is no longer skipped
+    assert "в 10 раз" in scale_problem({"source_value": "1,234,567", "source_unit": "юаней",
+                                         "article_value": "12 345 670", "article_unit": "юаней"})
+    assert scale_problem({"source_value": "37,400", "source_unit": "million yuan", "article_value": "37,4",
+                          "article_unit": "млрд юаней"}) is None
+    assert scale_problem({"source_value": "4573亿", "source_unit": "RMB", "article_value": "457,3",
+                          "article_unit": "млрд юаней"}) is None
+    assert "в 10 раз" in scale_problem({"source_value": "0.9", "source_unit": "billion yuan", "article_value": "9",
+                                         "article_unit": "млрд юаней"})
+
+
+def test_percent_against_ratio_is_compared_not_skipped():
+    from investor_agent.factgate import scale_problem
+    ok = {"source_value": "0.766", "source_unit": "ratio", "article_value": "76,6", "article_unit": "%"}
+    assert scale_problem(ok) is None
+    assert scale_problem({**ok, "article_value": "7,66"})  # a wrong percent against the ratio
+    assert scale_problem({"source_value": "76.6", "source_unit": "%", "article_value": "0,766", "article_unit": ""}) is None
+    assert scale_problem({"source_value": "76.6", "source_unit": "%", "article_value": "0,0766", "article_unit": ""})
+
+
+def test_only_opened_sources_prove_a_claim(make_app):
+    from investor_agent import factgate
+    reg = SourceRegistry()
+    opened = reg.add("https://a.com/x", "A")
+    reg.mark_fetched(opened.id, "A", "Revenue was 369 million yuan.")
+    searched = reg.add("https://b.com/y", "B")  # found by web_search, never fetch_page'd
+    report = {"sections": [{"body": "Первая партия принесла 369 млн юаней."}]}
+    claims = [_claim(id="C1", source=opened.id, source_quote="Revenue was 369 million yuan."),
+              _claim(id="C2", source=searched.id), _claim(id="C3", source="S99"),
+              _claim(id="C4", source="", source_url="https://invented.example/proof"),
+              _claim(id="C5", source="", source_url=searched.url)]
+    factgate._settle(report, claims, reg, factgate.STRICT)
+    assert [c["status"] for c in claims] == ["VERIFIED"] + ["UNVERIFIED"] * 4
+    assert all("не открывался" in c["note"] for c in claims[1:])
+    # an ERROR correction needs an opened source too
+    bad = _claim(status="ERROR", source=searched.id, fix={"find": "369 млн", "replace": "999 млн"})
+    factgate._settle(report, [bad], reg, factgate.STRICT)
+    assert report["sections"][0]["body"].startswith("Первая партия принесла 369 млн") and bad["status"] == "ERROR"
+    # the Jev step also needs an opened source and the quote on its page
+    app = make_app(http=media_http())
+    spoofed = _claim(source=searched.id)
+    factgate.judge_with_jev(app, [spoofed], reg)
+    assert spoofed["status"] == "UNVERIFIED" and not getattr(app.http, "jev_calls", None)
+
+
+def test_recheck_cannot_hide_or_swap_an_open_claim(make_app):
+    reg_ref = {}
+
+    def first(reg, p):
+        src = reg.add("https://a.com/x", "A")
+        reg.mark_fetched(src.id, "A", "Revenue was 369 million yuan.")
+        reg_ref["id"] = src.id
+        return {"claims": [_claim(source=src.id, article_value="3,7", article_unit="млрд юаней",
+                                  source_quote="Revenue was 369 million yuan.", status="VERIFIED"),
+                           _claim(id="C2", field="headline", text="миллиард", article_value="1", source_value="1",
+                                  source_unit="billion", article_unit="млрд", status="UNVERIFIED")]}
+
+    def sneaky(reg, p):  # tries material=false, another field, a never-opened source and drops C2
+        return {"claims": [_claim(field="teaser", material=False, source="S77", status="VERIFIED",
+                                  article_value="369", source_quote="Revenue was 369 million yuan."),
+                           _claim(id="C99", status="VERIFIED")]}
+
+    app = make_app(deepseek=FakeDeepSeek([lambda reg, p: story(reg), first, sneaky, sneaky]), http=media_http(),
+                   images=CountingHost())
+    assert riddle.prepare(app, "2026-11-09") == "blocked"
+    ledger = {c["id"]: c for c in app.store.draft_get("riddle:2026-11-09")["payload"]["report"]["fact_ledger"]}
+    assert set(ledger) == {"C1", "C2"}  # the invented C99 is ignored, the dropped C2 stays open
+    assert ledger["C1"]["field"] == "sections[0].body" and ledger["C1"]["material"] is True
+    assert ledger["C1"]["status"] != "VERIFIED" and ledger["C2"]["status"] == "UNVERIFIED"
+    assert "S77" not in json.dumps(ledger["C1"]) or ledger["C1"]["status"] != "VERIFIED"
+
+
+def test_telegraph_title_is_checked_with_the_content():
+    report = {"verified_numbers": ["76.6", "369"], "verified_title_numbers": ["76.6"],
+              "fact_check": {"checked": 3, "open": []}}
+    same = riddle.publication_status(report, (12, 3, "Выручка 369 млн, маржа 76,6%", "Разгадка бизнеса: маржа 76,6%"))
+    assert not any("страниц" in m and "расходится" in m for m in same["missing"])
+    changed = riddle.publication_status(report, (12, 3, "Выручка 369 млн, маржа 76,6%", "Разгадка бизнеса: маржа 7,66%"))
+    assert any("заголовке страницы" in m for m in changed["missing"])
+    gone = riddle.publication_status(report, (12, 3, "Выручка 369 млн", "Разгадка бизнеса: маржа"))
+    assert any("заголовке страницы" in m or "нет чисел" in m for m in gone["missing"])
+
+
+def test_numeric_headline_passes_publication_and_publish_is_idempotent(make_app):
+    ds = FakeDeepSeek([lambda reg, p: {**story(reg), "headline": "Как Acme заработала 76,6% маржи"}, fc_ok])
+    app = make_app(deepseek=ds, http=media_http(), images=CountingHost())
+    assert riddle.prepare(app, "2026-11-09") == "ready"
+    assert riddle.publish(app, "2026-11-09") == "published"  # the title is read back with get_page_full
+    assert riddle.publish(app, "2026-11-09") == "already_published"
+    posts = [m for m in app.telegram.sent if m["html"].startswith("<b>Как Acme заработала 76,6% маржи</b>")]
+    assert len(posts) == 1  # the second publish() sent nothing

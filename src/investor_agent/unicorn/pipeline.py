@@ -19,7 +19,8 @@ from ..textfmt import READING_WPM, reading_line, reading_minutes, table_nodes, t
 from ..timeutil import PeakHoursError, now_bj, ru_date
 from .. import glossary
 from ..growth import publish as growth_publish
-from . import factcheck, poll
+from .. import factgate
+from . import poll
 from .precheck import prune_dead_media
 
 log = logging.getLogger(__name__)
@@ -309,7 +310,12 @@ def _prepare(app: App, today: str) -> str:
         raise UnicornError("разбор не прошёл проверку: " + "; ".join(errors))
 
     report["company_name"] = report.get("company_name") or chosen["name"]
-    factcheck.run(app, report, registry, chosen)  # second pass over the numbers; never blocks the issue
+    # owner, 2026-11-09: the same gate as «Разгадка бизнеса» (DeepSeek + TypeSafe Jev, open claims back to DeepSeek),
+    # approximate: only the important claims; the issue is not prepared until both checks pass (retried later)
+    fc = factgate.run(app, report, registry, school_article, factgate.APPROX, label="unicorn")
+    report["fact_check"] = fc
+    if not fc.get("checked") or fc.get("open"):
+        raise UnicornError("фактчек не пройден: " + "; ".join((fc.get("open") or ["ничего не проверено"])[:3]))
     known = {t.lower() for t in glossary.known_terms(app)}
     report["glossary"] = [{"term": k, "group": g, "definition": d} for k, (g, d) in glossary.clean_terms(report.get("glossary")).items()
                           if k.lower() not in known]
@@ -326,6 +332,14 @@ def _prepare(app: App, today: str) -> str:
         "reader_topics": topics, "poll_options": poll.make_options(app, poll.next_issue(today), recent),
     })
     return "ready"
+
+
+def school_article(report: dict) -> dict:
+    """The final issue as the reader gets it, with field paths for the fact-check gate."""
+    keep = ("subtitle", "facts_line", "teaser", "metrics", "sections", "rounds", "charts")
+    out = {k: report.get(k) for k in keep if report.get(k)}
+    out["media"] = [{"caption": m.get("caption", "")} for m in report.get("media") or [] if isinstance(m, dict)]
+    return out
 
 
 def report_charts(report: dict) -> list[dict]:

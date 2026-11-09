@@ -452,7 +452,7 @@ def build_post(report: dict, date_str: str, channel_name: str = "", question: bo
             + f"⏱ Время чтения: {minutes_ru(max(1, round(read_minutes(report))))}")
 
 
-def publication_status(report: dict, page_check: tuple[int, int] | None = None) -> dict:
+def publication_status(report: dict, page_check: tuple | None = None) -> dict:
     """I. PUBLICATION STATUS."""
     missing = media_problems(report)
     minutes = read_minutes(report)
@@ -470,10 +470,14 @@ def publication_status(report: dict, page_check: tuple[int, int] | None = None) 
     elif fc.get("open"):
         missing.append(f"фактчек: {len(fc['open'])} существенных утверждений в статусе ERROR/UNVERIFIED — "
                        + "; ".join(fc["open"][:3]))
-    if page_check is not None and len(page_check) > 2 and report.get("verified_numbers"):
-        lost = sorted(set(report["verified_numbers"]) - factcheck.numbers(page_check[2]))
+    if page_check is not None and len(page_check) > 3 and report.get("verified_numbers"):
+        title = page_check[3]
+        lost = sorted(set(report["verified_numbers"]) - factcheck.numbers(page_check[2] + "\n" + title))
         if lost:
             missing.append("опубликованная страница расходится с проверенной версией, нет чисел: " + ", ".join(lost[:8]))
+        if factcheck.numbers(title) != set(report.get("verified_title_numbers") or []):
+            missing.append("числа в заголовке страницы не совпадают с проверенным заголовком: "
+                           + ", ".join(sorted(factcheck.numbers(title))[:6]))
     limits = [str(x) for x in (report.get("research_notes") or {}).get("limits") or [] if x]
     return {"status": "BLOCKED" if missing else "READY", "missing": missing, "limits": limits,
             "quality": quality_score(report),
@@ -532,6 +536,7 @@ def _prepare(app: App, today: str, company: str | None = None) -> str:
     build_media(app, report, registry)
     report["fact_check"] = factcheck.run(app, report, registry)  # §14–19: independent check of the FINAL text
     report["verified_numbers"] = sorted(factcheck.numbers(CITE_RE.sub(" ", article_text(report))))  # compared with the page later
+    report["verified_title_numbers"] = sorted(factcheck.numbers(str(report.get("headline") or "")))  # the page title (§19)
     status = publication_status(report)
     used = set(registry.cited_ids(*[x.get("body", "") for x in report["sections"]]))
     used |= {str(a.get("source")) for a in (report.get("cis") or {}).get("analogs") or [] if registry.get(str(a.get("source", "")))}
@@ -620,20 +625,24 @@ def _prune_dead(app: App, report: dict) -> None:
                                  if video_alive(app.http, v.get("video_url", ""))]
 
 
-def _verify_pages(app: App, url: str) -> tuple[int, int, str]:
-    """Read the created page (and its continuation parts) back from Telegraph: images, videos and the text
-    (compared with the fact-checked version, §19)."""
+def _verify_pages(app: App, url: str) -> tuple[int, int, str, str]:
+    """Read the created page (and its continuation parts) back from Telegraph: images, videos, the text and the TITLE
+    of the first part (all compared with the fact-checked version, §19)."""
     imgs = vids = 0
     texts: list[str] = []
+    title = ""
     seen = set()
     while url and url not in seen and len(seen) < 5:
         seen.add(url)
-        nodes = app.telegraph.get_page(url)
+        page = app.telegraph.get_page_full(url)
+        nodes = page.get("content") or []
+        if not seen - {url}:
+            title = str(page.get("title") or "")
         i, v = count_page_media(nodes, {app.store.get(HEADER_KEY) or "", app.store.get(BUTTON_KEY) or ""})
         imgs, vids = imgs + i, vids + v
         texts.append(factcheck.page_text(nodes))
         url = _next_part(nodes)
-    return imgs, vids, "\n".join(texts)
+    return imgs, vids, "\n".join(texts), title
 
 
 def _vk_post(app: App, report: dict) -> dict | None:

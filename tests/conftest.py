@@ -146,6 +146,9 @@ class FakeDeepSeek:
 
     def research(self, model, system, payload, registry, **kw):
         self.calls.append({"model": model, "payload": payload})
+        if not self.handlers and isinstance(payload, dict) and payload.get("mode") == "approx":
+            # the Unicorn School fact gate when a test does not script it: one checked, non-material claim
+            return {"claims": [{"id": "C0", "field": "teaser", "text": "—", "material": False, "status": "VERIFIED"}]}
         return self.handlers.pop(0)(registry, payload)
 
     def fetch(self, url):

@@ -13,7 +13,7 @@ from investor_agent.radar import digest, market, pipeline as radar
 from investor_agent.scheduler import Scheduler
 from investor_agent.sources import SourceRegistry
 from investor_agent.timeutil import BEIJING
-from investor_agent.unicorn import factcheck, precheck, pipeline as unicorn
+from investor_agent.unicorn import precheck, pipeline as unicorn
 
 
 # --- Yahoo ---------------------------------------------------------------------------------
@@ -202,37 +202,53 @@ def test_publish_adds_issue_terms_to_glossary_not_to_page(make_app):
 
 
 # --- fact check --------------------------------------------------------------------------------
-def test_factcheck_corrects_only_with_opened_source_and_flags_unverified():
-    reg = SourceRegistry()
-    opened = reg.add("https://reuters.com/a", "A", "Reuters")
-    reg.mark_fetched(opened.id, "A", "text")
-    closed = reg.add("https://x.com/b", "B", "X")
-    report = {"metrics": [{"label": "Оценка", "value": "$10 млрд", "note": "2026", "source": "S9"},
-                          {"label": "Клиенты", "value": "1000", "note": "2026"},
-                          {"label": "Выручка", "value": "$1 млрд", "note": "2026"}],
-              "rounds": [{"date": "2025-03", "stage": "B", "amount": "$60 млн"}]}
-    checks = [{"kind": "metric", "index": 0, "field": "value", "status": "corrected", "corrected": "$12 млрд", "source": opened.id},
-              {"kind": "metric", "index": 2, "field": "value", "status": "corrected", "corrected": "$2 млрд", "source": closed.id},
-              {"kind": "metric", "index": 1, "field": "value", "status": "unverifiable"},
-              {"kind": "round", "index": 0, "field": "amount", "status": "unverifiable"},
-              {"kind": "round", "index": 5, "field": "amount", "status": "corrected"},
-              {"kind": "metric", "index": 0, "field": "label", "status": "corrected", "corrected": "x", "source": opened.id}]
-    summary = factcheck.apply_checks(report, checks, reg)
-    assert report["metrics"][0]["value"] == "$12 млрд" and report["metrics"][0]["source"] == opened.id
-    assert report["metrics"][2]["value"] == "$1 млрд"  # the source was never opened: no correction
-    assert factcheck.UNCONFIRMED_NOTE in report["metrics"][1]["note"]
-    assert summary["corrected"] == 1 and len(summary["unverified"]) == 2
-    assert "Не удалось независимо подтвердить" in report["unknowns"][0]
+def test_school_fact_gate_sends_errors_back_to_deepseek_and_blocks_until_both_checks_pass(make_app):
+    stage1 = lambda reg, p: {"candidates": [cand("Acme"), cand("Beta", industry="hr"), cand("Gamma", industry="edtech")]}
+
+    opened = {}
+
+    def check(reg, p):  # approximate mode: only the important claims; a tenfold error in a metric
+        assert p["mode"] == "approx" and p["max_claims"] == 20 and p["article"]["metrics"]
+        src = reg.add("https://reuters.com/acme", "Acme", "Reuters")
+        reg.mark_fetched(src.id, "Acme", "Acme revenue reached $100 million in 2025.")
+        opened["id"] = src.id
+        return {"claims": [{"id": "C1", "field": "metrics[0].value", "text": "выручка", "material": True,
+                            "source": src.id, "source_value": "100", "source_unit": "million USD",
+                            "article_value": "1", "article_unit": "млрд $", "status": "VERIFIED",
+                            "source_quote": "Acme revenue reached $100 million in 2025."}]}
+
+    def rework(reg, p):  # back to DeepSeek: it corrects the metric with the source
+        assert p["recheck"][0]["id"] == "C1" and "программная проверка" in p["recheck"][0]["note"]
+        value = p["article"]["metrics"][0]["value"]
+        return {"claims": [{"id": "C1", "field": "metrics[0].value", "text": "выручка", "material": True, "source": opened["id"],
+                            "source_value": "100", "source_unit": "million USD", "article_value": "100",
+                            "article_unit": "млн $", "status": "ERROR", "fix": {"find": value, "replace": "$100 млн"},
+                            "source_quote": "Acme revenue reached $100 million in 2025."}]}
+
+    def confirm(reg, p):
+        assert p["article"]["metrics"][0]["value"] == "$100 млн"
+        return {"claims": [{"id": "C1", "field": "metrics[0].value", "text": "выручка", "material": True, "source": opened["id"],
+                            "source_value": "100", "source_unit": "million USD", "article_value": "100",
+                            "article_unit": "млн $", "status": "VERIFIED",
+                            "source_quote": "Acme revenue reached $100 million in 2025."}]}
+
+    http = FakeHttp()
+    app = make_app(deepseek=FakeDeepSeek([stage1, lambda reg, p: good_report(reg), check, rework, confirm]), http=http)
+    assert unicorn.prepare(app, "2026-11-09") == "ready"
+    report = app.store.draft_get("2026-11-09")["payload"]["report"]
+    assert report["metrics"][0]["value"] == "$100 млн" and not report["fact_check"]["open"]
+    assert report["fact_check"]["errors_found"] == 1 and http.jev_calls  # TypeSafe Jev confirmed the corrected claim
 
 
-def test_factcheck_failure_does_not_stop_the_issue(make_app):
+def test_school_fact_gate_failure_stops_the_issue(make_app):
     stage1 = lambda reg, p: {"candidates": [cand("Acme"), cand("Beta", industry="hr"), cand("Gamma", industry="edtech")]}
 
     def boom(reg, p):
         raise RuntimeError("deepseek down")
 
-    app = make_app(deepseek=FakeDeepSeek([stage1, lambda reg, p: good_report(reg), boom]))
-    assert unicorn.prepare(app, "2026-11-09") == "ready"
+    app = make_app(deepseek=FakeDeepSeek([stage1, lambda reg, p: good_report(reg), boom]), http=FakeHttp())
+    assert unicorn.prepare(app, "2026-11-09") == "failed"
+    assert "фактчек не пройден" in app.telegram.sent[-1]["html"]
 
 
 # --- pre-publication check ------------------------------------------------------------------------
