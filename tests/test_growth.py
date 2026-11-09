@@ -45,19 +45,21 @@ def test_hook_comes_from_the_article_and_differs_between_articles():
 
 def test_subscribe_block_has_approved_text_and_only_supported_tags():
     nodes = share.subscribe_nodes("https://t.me/+abc")
-    text = flat(nodes)
+    text = "\n".join(share._text(n) for n in nodes)
     assert "Каждый день разбираем бизнес, который смог вырасти до миллиардной оценки." in text
     assert "Подписывайтесь на „Школу единорогов“, чтобы находить идеи для собственного бизнеса." in text
-    assert "Подписаться на Школу единорогов" in text
-    tags = {n["tag"] for n in nodes} | {"a", "b"}
-    assert tags <= {"hr", "p", "a", "b", "h4", "br"}
+    assert "Подписаться на Школу единорогов" not in text  # no separate link line
+    link = nodes[2]["children"][1]  # the personal link is the phrase itself
+    assert link == {"tag": "a", "attrs": {"href": "https://t.me/+abc"}, "children": ["„Школу единорогов“"]}
+    assert {n["tag"] for n in nodes} <= {"hr", "p"}
 
 
 # --- publication integration ----------------------------------------------------------------------------------
 def test_publish_adds_cta_share_buttons_and_records_everything(make_app):
     app = published_app(make_app)
     page_nodes = flat(app.telegraph.by_url["https://telegra.ph/test-page"][1])
-    assert "Подписаться на Школу единорогов" in page_nodes and "https://t.me/+inv1" in page_nodes
+    assert "https://t.me/+inv1" in page_nodes and "Школу единорогов" in page_nodes
+    assert "Подписаться на Школу единорогов" not in page_nodes
     assert "Поделиться разбором" in page_nodes and "t.me/share/url" in page_nodes and "wa.me" in page_nodes
     gdb = db(app)
     pub = gdb.publication_by_date(DAY)
@@ -517,7 +519,7 @@ def test_crash_after_page_creation_reuses_the_page(make_app):
     assert unicorn.publish(app, DAY) == "published"
     assert len(app.telegraph.pages) == 1
     assert app.store.draft_get(DAY)["page_url"] == "https://telegra.ph/test-page"
-    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Подписаться на Школу единорогов") == 1
+    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Каждый день разбираем бизнес") == 1
 
 
 def test_failed_page_lookup_never_creates_a_second_page(make_app):
