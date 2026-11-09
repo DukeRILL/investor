@@ -372,3 +372,9 @@ def test_cover_goes_first_and_file_is_light():
     _, plain = unicorn.build_page(_report_with_media(reg), reg, "9 ноября 2026")
     assert plain[0]["tag"] == "p"  # no cover: layout as before
     assert 0 < unicorn.COVER_PATH.stat().st_size < 250_000
+
+
+def test_channel_button_under_cover_and_at_end():
+    reg = SourceRegistry()
+    _, nodes = unicorn.build_page(_report_with_media(reg), reg, "9 ноября 2026", "https://img/cover.jpg")
+    assert "t.me/investor_duker" in json.dumps(nodes[1]) and "t.me/investor_duker" in json.dumps(nodes[-1])

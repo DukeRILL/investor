@@ -424,6 +424,14 @@ def hero_photo(report: dict) -> dict | None:
 COVER_PATH = Path(__file__).resolve().parents[3] / "assets" / "unicorn_cover.jpg"  # 1080 px wide JPEG, ~160 KB
 
 
+CHANNEL_URL = "https://t.me/investor_duker"
+
+
+def _channel_button() -> dict:
+    return {"tag": "p", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
+        {"tag": "strong", "children": ["➡️ Перейти на канал"]}]}]}
+
+
 def cover_url(app: App) -> str | None:
     """Fixed cover for the top of every Unicorn School article; uploaded to the image host (same content = same URL).
     A failure only means an article without the cover."""
@@ -442,6 +450,7 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, cover: str
     nodes: list = []
     if cover:
         nodes.append({"tag": "figure", "children": [{"tag": "img", "attrs": {"src": cover}}]})
+        nodes.append(_channel_button())
     if report.get("subtitle"):
         nodes.append({"tag": "p", "children": [{"tag": "b", "children": [report["subtitle"]]}]})
     if report.get("facts_line"):
@@ -503,6 +512,7 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, cover: str
         {"tag": "li", "children": [f"[{s.id[1:]}] ", {"tag": "a", "attrs": {"href": s.url}, "children": [s.title or s.url]},
                                    f" — {s.publisher}" + (f", {s.date[:10]}" if s.date else "")]}
         for s in registry.sources.values()]})
+    nodes.append(_channel_button())
     return title, nodes
 
 
