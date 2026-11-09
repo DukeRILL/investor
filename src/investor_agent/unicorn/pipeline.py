@@ -434,7 +434,7 @@ def _channel_button(logo: str | None = None) -> list:
     """Telegraph has no buttons, stretches pictures to the full width, and a link around a picture is not tappable in
     every viewer (the owner saw it dead on a phone). So: the button picture plus a text link right under it."""
     link = {"tag": "p", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
-        {"tag": "strong", "children": ["👉 Перейти на канал: " + CHANNEL_URL.removeprefix("https://")]}]}]}
+        "🦄 Перейти на канал: " + CHANNEL_URL.removeprefix("https://")]}]}
     if logo:
         return [{"tag": "figure", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
             {"tag": "img", "attrs": {"src": logo}}]}]}, link]
@@ -468,7 +468,6 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, cover: str
     nodes: list = []
     if cover:
         nodes.append({"tag": "figure", "children": [{"tag": "img", "attrs": {"src": cover}}]})
-        nodes.extend(_channel_button(logo))
     if report.get("subtitle"):
         nodes.append({"tag": "p", "children": [{"tag": "b", "children": [report["subtitle"]]}]})
     if report.get("facts_line"):

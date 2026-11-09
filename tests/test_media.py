@@ -374,7 +374,9 @@ def test_cover_goes_first_and_file_is_light():
     assert 0 < unicorn.COVER_PATH.stat().st_size < 250_000
 
 
-def test_channel_button_under_cover_and_at_end():
+def test_channel_button_only_at_end():
     reg = SourceRegistry()
     _, nodes = unicorn.build_page(_report_with_media(reg), reg, "9 ноября 2026", "https://img/cover.jpg", "https://img/tg.png")
-    assert "t.me/investor_duker" in json.dumps(nodes[1]) and "tg.png" in json.dumps(nodes[1]) and "t.me/investor_duker" in json.dumps(nodes[-1]) and nodes[-1]["tag"] == "p"
+    flat = [json.dumps(n, ensure_ascii=False) for n in nodes]
+    assert "t.me/investor_duker" not in "".join(flat[:3])  # not under the cover
+    assert "tg.png" in flat[-2] and "🦄 Перейти на канал" in flat[-1]
