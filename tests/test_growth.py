@@ -47,7 +47,7 @@ def test_subscribe_block_has_approved_text_and_only_supported_tags():
     nodes = share.subscribe_nodes("https://t.me/+abc")
     text = "\n".join(share._text(n) for n in nodes)
     assert text.startswith("Завтра — новая история большого бизнеса\n")
-    assert "Каждый день в 10:00 разбираем реальные компании: с чего начинали, как находили точки роста, на чём зарабатывали и какие решения привели к успеху." in text
+    assert "Каждый день разбираем реальные компании: с чего начинали, как находили точки роста, на чём зарабатывали и какие решения привели к успеху." in text
     assert "→ Подписаться на «ШКОЛУ ЕДИНОРОГОВ»" in text
     link = nodes[2]["children"][0]["children"][0]  # the bold line is the link, all of it
     assert link == {"tag": "a", "attrs": {"href": "https://t.me/+abc"}, "children": ["→ Подписаться на «ШКОЛУ ЕДИНОРОГОВ»"]}
@@ -1109,3 +1109,23 @@ def test_old_footer_texts_are_gone(make_app):
                 "Каждый день разбираем бизнес", "Подписывайтесь на"):
         assert old not in text, old
     assert '"hr"' not in text[-1500:]
+
+
+def _footer(app):
+    nodes = app.telegraph.by_url["https://telegra.ph/test-page"][1]
+    start = next(i for i, n in enumerate(nodes) if share._text(n) == share.SUBSCRIBE_TITLE)
+    return [(n.get("tag"), share._text(n)) for n in nodes[start:]]
+
+
+def _expected_footer():
+    urls = {"telegram": "t", "vk": "v", "whatsapp": "w"}
+    return [(n.get("tag"), share._text(n)) for n in share.subscribe_nodes("h") + share.share_nodes(urls)]
+
+
+def test_unicorn_footer_comes_from_the_one_template(make_app):
+    assert _footer(published_app(make_app)) == _expected_footer()
+
+
+def test_riddle_footer_comes_from_the_same_template(make_app):
+    got = _footer(riddle_app(make_app))
+    assert got == _expected_footer() and "10:00" not in "".join(t for _, t in got)
