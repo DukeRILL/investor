@@ -432,15 +432,16 @@ CHANNEL_URL = "https://t.me/investor_duker"
 LOGO_PATH = COVER_PATH.with_name("tg_button.png")  # 1080x88 button picture: TG logo + channel name
 
 
-def _channel_button(logo: str | None = None, channel: str = CHANNEL_URL) -> list:
+def _channel_button(logo: str | None = None, channel: str = CHANNEL_URL, text_link: bool = True) -> list:
     """Telegraph has no buttons, stretches pictures to the full width, and a link around a picture is not tappable in
     every viewer (the owner saw it dead on a phone). So: the button picture plus a text link right under it."""
     link = {"tag": "p", "children": [{"tag": "a", "attrs": {"href": channel}, "children": [
         "🦄 Перейти на канал: " + channel.removeprefix("https://")]}]}
+    tail = [link] if text_link else []  # Школа: no text line (Илья, 2026-11-09), the link sits in the subscribe text
     if logo:
         return [{"tag": "figure", "children": [{"tag": "a", "attrs": {"href": channel}, "children": [
-            {"tag": "img", "attrs": {"src": logo}}]}]}, link]
-    return [link]
+            {"tag": "img", "attrs": {"src": logo}}]}]}] + tail
+    return tail
 
 
 def logo_url(app: App) -> str | None:
@@ -531,7 +532,7 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, cover: str
         {"tag": "li", "children": [f"[{s.id[1:]}] ", {"tag": "a", "attrs": {"href": s.url}, "children": [s.title or s.url]},
                                    f" — {s.publisher}" + (f", {s.date[:10]}" if s.date else "")]}
         for s in registry.sources.values()]})
-    nodes.extend(_channel_button(logo))
+    nodes.extend(_channel_button(logo, text_link=False))
     return title, nodes
 
 

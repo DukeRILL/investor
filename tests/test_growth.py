@@ -47,18 +47,18 @@ def test_subscribe_block_has_approved_text_and_only_supported_tags():
     nodes = share.subscribe_nodes("https://t.me/+abc")
     text = "\n".join(share._text(n) for n in nodes)
     assert "Каждый день разбираем бизнес, который смог вырасти до миллиардной оценки." in text
-    assert "Подписывайтесь на „Школу единорогов“, чтобы находить идеи для собственного бизнеса." in text
+    assert "Подписывайтесь на канал „🦄 ШКОЛА ЕДИНОРОГОВ“, чтобы находить идеи для собственного бизнеса." in text
     assert "Подписаться на Школу единорогов" not in text  # no separate link line
-    link = nodes[2]["children"][1]  # the personal link is the phrase itself
-    assert link == {"tag": "a", "attrs": {"href": "https://t.me/+abc"}, "children": ["„Школу единорогов“"]}
-    assert {n["tag"] for n in nodes} <= {"hr", "p"}
+    link = nodes[1]["children"][1]  # the personal link is the channel name itself
+    assert link == {"tag": "a", "attrs": {"href": "https://t.me/+abc"}, "children": ["„🦄 ШКОЛА ЕДИНОРОГОВ“"]}
+    assert {n["tag"] for n in nodes} == {"p"}  # no horizontal rule
 
 
 # --- publication integration ----------------------------------------------------------------------------------
 def test_publish_adds_cta_share_buttons_and_records_everything(make_app):
     app = published_app(make_app)
     page_nodes = flat(app.telegraph.by_url["https://telegra.ph/test-page"][1])
-    assert "https://t.me/+inv1" in page_nodes and "Школу единорогов" in page_nodes
+    assert "https://t.me/+inv1" in page_nodes and "ШКОЛА ЕДИНОРОГОВ" in page_nodes
     assert "Подписаться на Школу единорогов" not in page_nodes
     assert "Поделиться разбором" in page_nodes and "t.me/share/url" in page_nodes and "wa.me" in page_nodes
     gdb = db(app)

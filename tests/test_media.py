@@ -379,4 +379,4 @@ def test_channel_button_only_at_end():
     _, nodes = unicorn.build_page(_report_with_media(reg), reg, "9 ноября 2026", "https://img/cover.jpg", "https://img/tg.png")
     flat = [json.dumps(n, ensure_ascii=False) for n in nodes]
     assert "t.me/investor_duker" not in "".join(flat[:3])  # not under the cover
-    assert "tg.png" in flat[-2] and "🦄 Перейти на канал" in flat[-1]
+    assert "tg.png" in flat[-1] and "Перейти на канал" not in "".join(flat)  # Школа: no text line under the button
