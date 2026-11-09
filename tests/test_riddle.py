@@ -100,7 +100,7 @@ def test_full_cycle_draft_goes_to_admin_with_12_images_and_3_videos(make_app):
     assert "РАЗГАДКА БИЗНЕСА" in post["html"] and "Время чтения:" in post["html"] and "ТЕСТИРОВАТЬ" not in post["html"]
     title, nodes = app.telegraph.pages[0]
     assert title.startswith("Разгадка бизнеса: ")
-    header = app.store.get("riddle_header_url")
+    header = app.store.get("riddle_header_url_v2")
     assert nodes[0]["children"][0]["attrs"]["src"] == header  # the rubric header opens the article
     imgs, vids = riddle.count_page_media(nodes, {header})
     assert imgs >= 12 and vids == 3
