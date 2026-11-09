@@ -1,42 +1,251 @@
 {
   "name": "VK: Разгадка бизнеса (пост от имени сообщества)",
   "active": false,
-  "settings": {"executionOrder": "v1"},
+  "settings": {
+    "executionOrder": "v1"
+  },
   "nodes": [
-    {"id": "n1", "name": "Webhook (из агента)", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 0],
-     "parameters": {"httpMethod": "POST", "path": "vk-riddle", "responseMode": "lastNode", "authentication": "headerAuth"},
-     "credentials": {"httpHeaderAuth": {"name": "VK webhook secret"}}},
-    {"id": "n2", "name": "Собрать пост", "type": "n8n-nodes-base.set", "typeVersion": 3.4, "position": [240, 0],
-     "parameters": {"assignments": {"assignments": [
-       {"id": "a1", "name": "message", "type": "string", "value": "={{ $json.body.text + '\\n\\n' + $json.body.channel_url }}"},
-       {"id": "a2", "name": "guid", "type": "string", "value": "={{ $json.body.guid }}"},
-       {"id": "a3", "name": "attachments", "type": "string", "value": "={{ $json.body.article_url }}"}]}}},
-    {"id": "n3", "name": "VK wall.post", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [480, 0],
-     "retryOnFail": true, "maxTries": 3, "waitBetweenTries": 5000, "onError": "continueErrorOutput",
-     "parameters": {"method": "POST", "url": "https://api.vk.com/method/wall.post",
-       "authentication": "genericCredentialType", "genericAuthType": "httpQueryAuth",
-       "sendQuery": true, "queryParameters": {"parameters": [{"name": "v", "value": "5.199"}]},
-       "sendBody": true, "contentType": "form-urlencoded",
-       "bodyParameters": {"parameters": [
-         {"name": "owner_id", "value": "-243098850"}, {"name": "from_group", "value": "1"},
-         {"name": "guid", "value": "={{ $json.guid }}"}, {"name": "message", "value": "={{ $json.message }}"},
-         {"name": "attachments", "value": "={{ $json.attachments }}"}]}},
-     "credentials": {"httpQueryAuth": {"name": "VK community token"}}},
-    {"id": "n4", "name": "Ответ VK ок?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [720, 0],
-     "parameters": {"conditions": {"combinator": "and", "options": {"typeValidation": "loose"}, "conditions": [
-       {"id": "c1", "leftValue": "={{ $json.response.post_id }}", "rightValue": "", "operator": {"type": "number", "operation": "exists", "singleValue": true}}]}}},
-    {"id": "n5", "name": "Сохранить ID и URL", "type": "n8n-nodes-base.set", "typeVersion": 3.4, "position": [960, -100],
-     "parameters": {"assignments": {"assignments": [
-       {"id": "b1", "name": "post_id", "type": "number", "value": "={{ $json.response.post_id }}"},
-       {"id": "b2", "name": "post_url", "type": "string", "value": "=https://vk.com/wall-243098850_{{ $json.response.post_id }}"}]}}},
-    {"id": "n6", "name": "Telegram админу: ошибка", "type": "n8n-nodes-base.telegram", "typeVersion": 1.2, "position": [960, 120],
-     "parameters": {"chatId": "={{ $env.ADMIN_CHAT_ID }}", "text": "=VK: публикация не удалась: {{ JSON.stringify($json.error || $json) }}"},
-     "credentials": {"telegramApi": {"name": "Investor Telegram bot"}}}
+    {
+      "id": "n1",
+      "name": "Webhook (из агента)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "vk-riddle",
+        "responseMode": "lastNode",
+        "authentication": "headerAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "VK webhook secret"
+        }
+      }
+    },
+    {
+      "id": "n2",
+      "name": "Собрать пост",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "message",
+              "type": "string",
+              "value": "={{ $json.body.text + '\\n\\n' + $json.body.channel_url }}"
+            },
+            {
+              "id": "a2",
+              "name": "guid",
+              "type": "string",
+              "value": "={{ $json.body.guid }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n3",
+      "name": "VK wall.post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.vk.com/method/wall.post",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "v",
+              "value": "5.199"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "owner_id",
+              "value": "-243098850"
+            },
+            {
+              "name": "from_group",
+              "value": "1"
+            },
+            {
+              "name": "guid",
+              "value": "={{ $json.guid }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ $json.message }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpQueryAuth": {
+          "name": "VK community token"
+        }
+      }
+    },
+    {
+      "id": "n4",
+      "name": "Ответ VK ок?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "options": {
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.response.post_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n5",
+      "name": "Сохранить ID и URL",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        960,
+        -100
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b1",
+              "name": "post_id",
+              "type": "number",
+              "value": "={{ $json.response.post_id }}"
+            },
+            {
+              "id": "b2",
+              "name": "post_url",
+              "type": "string",
+              "value": "=https://vk.com/wall-243098850_{{ $json.response.post_id }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n6",
+      "name": "Telegram админу: ошибка",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        960,
+        120
+      ],
+      "parameters": {
+        "chatId": "={{ $env.ADMIN_CHAT_ID }}",
+        "text": "=VK: публикация не удалась: {{ JSON.stringify($json.error || $json) }}"
+      },
+      "credentials": {
+        "telegramApi": {
+          "name": "Investor Telegram bot"
+        }
+      }
+    }
   ],
   "connections": {
-    "Webhook (из агента)": {"main": [[{"node": "Собрать пост", "type": "main", "index": 0}]]},
-    "Собрать пост": {"main": [[{"node": "VK wall.post", "type": "main", "index": 0}]]},
-    "VK wall.post": {"main": [[{"node": "Ответ VK ок?", "type": "main", "index": 0}], [{"node": "Telegram админу: ошибка", "type": "main", "index": 0}]]},
-    "Ответ VK ок?": {"main": [[{"node": "Сохранить ID и URL", "type": "main", "index": 0}], [{"node": "Telegram админу: ошибка", "type": "main", "index": 0}]]}
+    "Webhook (из агента)": {
+      "main": [
+        [
+          {
+            "node": "Собрать пост",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Собрать пост": {
+      "main": [
+        [
+          {
+            "node": "VK wall.post",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "VK wall.post": {
+      "main": [
+        [
+          {
+            "node": "Ответ VK ок?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram админу: ошибка",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ответ VK ок?": {
+      "main": [
+        [
+          {
+            "node": "Сохранить ID и URL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram админу: ошибка",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   }
 }
