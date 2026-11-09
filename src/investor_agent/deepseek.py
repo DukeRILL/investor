@@ -135,7 +135,10 @@ class DeepSeekClient:
                                      headers=self._headers(), timeout=600)
             if isinstance(data, dict) and data.get("choices"):
                 self.usage.add(model, data.get("usage"))
-                return data["choices"][0]["message"]
+                choice = data["choices"][0]
+                if choice.get("finish_reason") not in (None, "stop", "tool_calls"):
+                    log.warning("deepseek finish_reason=%s usage=%s", choice.get("finish_reason"), data.get("usage"))
+                return choice["message"]
             # DeepSeek sometimes answers 200 with an empty/non-JSON body: retry, then fail with a clear error.
             snippet = (data if isinstance(data, str) else json.dumps(data, ensure_ascii=False, default=str))[:300]
             log.warning("invalid chat response (attempt %d/%d): %s %s", attempt, self.invalid_retries,
@@ -209,6 +212,7 @@ class DeepSeekClient:
         messages: list[dict] = [{"role": "system", "content": system},
                                 {"role": "user", "content": _dump(payload)}]
         calls = 0
+        empty_replies = 0
         while True:
             tools = AGENT_TOOLS if calls < max_tool_calls else None
             if tools is None:
@@ -217,7 +221,16 @@ class DeepSeekClient:
                                max_tokens=max_tokens)
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
-                return parse_json(message.get("content") or "")
+                content = message.get("content") or ""
+                if not content.strip() and empty_replies < 2:
+                    # JSON mode / a huge context sometimes yields an empty answer: ask again, without tools
+                    empty_replies += 1
+                    log.warning("empty final answer (attempt %d/2); asking again", empty_replies)
+                    messages.append({"role": "user", "content": "Your last reply was empty. Return the complete final "
+                                                                 "JSON object now, nothing else."})
+                    calls = max(calls, max_tool_calls)
+                    continue
+                return parse_json(content)
             messages.append({k: v for k, v in message.items() if v is not None})
             for call in tool_calls:
                 calls += 1

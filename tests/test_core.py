@@ -191,3 +191,12 @@ def test_at_most_three_links_per_paragraph():
     first, second = html.split("\n\n")
     assert first.count("<a ") == 3 and second.count("<a ") == 2
     assert to_tg_html(text, reg).count("<a ") == 7  # rule applies to the radar only
+
+
+def test_research_asks_again_after_an_empty_final_answer():
+    empty = {"choices": [{"message": {"role": "assistant", "content": ""}}]}
+    ok = {"choices": [{"message": {"role": "assistant", "content": '{"ok": true}'}}]}
+    http = FakeHttp([empty, ok])
+    client = DeepSeekClient(http, "key", clock=lambda: bj(2026, 11, 9, 3, 0))
+    assert client.research("deepseek-flash", "sys", {"a": 1}, SourceRegistry()) == {"ok": True}
+    assert len(http.requests) == 2
