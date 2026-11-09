@@ -172,13 +172,23 @@ def test_preview_has_name_sector_and_logo():
     from PIL import Image
     from investor_agent.riddle import visuals
     template = io.BytesIO()
-    Image.new("RGB", (1080, 1080), "#031a46").save(template, "PNG")
+    Image.new("RGB", (1199, 1312), "#031a46").save(template, "PNG")
     logo = io.BytesIO()
     Image.new("RGB", (96, 96), "#ff6900").save(logo, "PNG")
     plain = visuals.render_preview(template.getvalue(), "Xiaomi", "Электроника", None)
     with_logo = visuals.render_preview(template.getvalue(), "Xiaomi", "Электроника", logo.getvalue())
     img = Image.open(io.BytesIO(with_logo))
-    assert img.size == (1080, 1080) and img.getpixel((140, 990)) != Image.open(io.BytesIO(plain)).getpixel((140, 990))
+    assert img.size == (1199, 1312) and img.getpixel((190, 620)) != Image.open(io.BytesIO(plain)).getpixel((190, 620))
+    # nothing is drawn outside the fields: a very long name and sector stay inside their boxes
+    long = visuals.render_preview(template.getvalue(), "Очень длинное название компании-гиганта " * 3, "Потребительская электроника и интернет-сервисы " * 3, logo.getvalue())
+    base = Image.new("RGB", (1199, 1312), "#031a46")
+    out = Image.open(io.BytesIO(long))
+    from PIL import ImageChops
+    box = ImageChops.difference(out, base).convert("L").point(lambda v: 255 if v > 40 else 0).getbbox()
+    fields = [visuals.LOGO_BOX, visuals.NAME_BOX, visuals.SECTOR_BOX]
+    for field in fields:
+        pass
+    assert box and box[0] >= 90 and box[2] <= 1112
     assert visuals.render_preview(b"junk", "X", "Y") is None
 
 

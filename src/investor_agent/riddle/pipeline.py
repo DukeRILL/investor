@@ -49,6 +49,7 @@ TEASER_MIN, TEASER_MAX = 350, 700  # §17: about 400–650 characters
 CAPTION_LIMIT = 1000
 SEARCH_CACHE_HOURS = 24
 ARCHIVE_KEY = "riddle_archive"
+PREVIEW_FILE = Path(__file__).with_name("preview.jpg")  # owner template with fields for logo, name, sector (2026-11-09)
 COVER_FILE = Path(__file__).with_name("cover.jpg")  # owner's rubric cover (2026-11-09): the picture of every post
 COVER_KEY = "riddle_cover_url"
 HEADER_FILE = Path(__file__).with_name("header.jpg")  # owner's article header (2026-11-09), 1000 px JPEG ≈200 KB
@@ -545,7 +546,7 @@ def preview_url(app: App, report: dict, registry: SourceRegistry) -> str | None:
     try:
         site = registry.get(str(report.get("website_source", "")))
         logo = visuals.find_logo(app.http, site.url) if site else None
-        png = visuals.render_preview(COVER_FILE.read_bytes(), report.get("company_name", ""),
+        png = visuals.render_preview(PREVIEW_FILE.read_bytes(), report.get("company_name", ""),
                                      report.get("category") or report.get("industry") or "", logo)
         if png:
             return _uploader(app)(png, "image/jpeg")

@@ -160,36 +160,76 @@ def _bold(size: int):
     return None
 
 
+# Fields of the owner's preview template (preview.jpg, 1199x1312, 2026-11-09): everything is drawn INSIDE them.
+LOGO_BOX = (106, 543, 276, 702)         # white rounded square for the logo
+NAME_BOX = (345, 548, 1110, 700)        # free area right of the logo inside the gold frame
+SECTOR_BOX = (92, 1188, 382, 1232)      # dark field under «СЕКТОР:» (bottom left)
+NAME_INK, SECTOR_INK = "#ffffff", "#ffd414"
+
+
+def _fit_lines(d, text: str, box: tuple, sizes: range, max_lines: int, font_for):
+    """Biggest font size (descending `sizes`) at which `text` wraps into <= max_lines lines inside the box.
+    Returns (font, lines), or the smallest size with the last line truncated with an ellipsis: never leaves the box."""
+    w, h = box[2] - box[0], box[3] - box[1]
+    words = text.split()
+    for size in sizes:
+        font = font_for(size)
+        lines: list[str] = []
+        cur = ""
+        for word in words:
+            trial = (cur + " " + word).strip()
+            if d.textlength(trial, font=font) <= w or not cur:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = word
+        lines.append(cur)
+        line_h = size * 1.15
+        if len(lines) <= max_lines and len(lines) * line_h <= h and all(d.textlength(x, font=font) <= w for x in lines):
+            return font, lines
+    font = font_for(sizes[-1])
+    line = " ".join(words)
+    while line and d.textlength(line + "…", font=font) > w:
+        line = line[:-1]
+    return font, [line.rstrip() + "…"]
+
+
 def render_preview(template: bytes, name: str, sector: str, logo: bytes | None = None) -> bytes | None:
-    """The rubric picture (1080x1080) with the company logo, name and sector in its free bottom band.
-    Returns JPEG bytes, or None when Pillow or a Cyrillic font is missing (the plain rubric picture is used then)."""
+    """The owner's template with the company's logo (white square), name (right of the logo) and sector (under «СЕКТОР:»).
+    Text is fitted automatically to the fields and never leaves them. Returns JPEG bytes, or None when Pillow or a
+    Cyrillic font is missing / the template is broken (the plain rubric picture is used then)."""
     try:
         from PIL import Image, ImageDraw  # noqa: PLC0415
-        img = Image.open(io.BytesIO(template)).convert("RGB").resize((1080, 1080))
+        img = Image.open(io.BytesIO(template)).convert("RGB")
     except Exception:  # noqa: BLE001
         return None
-    d = ImageDraw.Draw(img)
-    name = " ".join(str(name or "").split()).upper()[:28]
-    sector = " ".join(str(sector or "").split())[:46]
-    if not name or not _bold(10):
+    if img.size != (1199, 1312) or not _bold(10):
         return None
-    x, top, band = 80, 930, 120
+    d = ImageDraw.Draw(img)
+    name = " ".join(str(name or "").split())
+    sector = " ".join(str(sector or "").split())
+    if not name:
+        return None
     if logo:
         try:
             mark = Image.open(io.BytesIO(logo)).convert("RGBA")
-            mark.thumbnail((band - 24, band - 24), Image.LANCZOS)
-            d.rounded_rectangle([x, top, x + band, top + band], radius=22, fill="#ffffff")
-            img.paste(mark, (x + (band - mark.width) // 2, top + (band - mark.height) // 2), mark)
-            x += band + 28
-        except Exception:  # noqa: BLE001 - a broken logo file: name and sector alone
+            pad = 16
+            mark.thumbnail((LOGO_BOX[2] - LOGO_BOX[0] - 2 * pad, LOGO_BOX[3] - LOGO_BOX[1] - 2 * pad), Image.LANCZOS)
+            cx, cy = (LOGO_BOX[0] + LOGO_BOX[2]) // 2, (LOGO_BOX[1] + LOGO_BOX[3]) // 2
+            img.paste(mark, (cx - mark.width // 2, cy - mark.height // 2), mark)
+        except Exception:  # noqa: BLE001 - a broken logo file: the white square stays empty, name and sector still drawn
             pass
-    size = 52
-    while size > 30 and d.textlength(name, font=_bold(size)) > 1000 - x:
-        size -= 2
-    d.text((x, top + 6), name, font=_bold(size), fill=GOLD)
-    d.text((x, top + 6 + size + 14), sector, font=_bold(30), fill=PREVIEW_INK)
+    font, lines = _fit_lines(d, name.upper(), NAME_BOX, range(86, 27, -2), 2, _bold)
+    line_h = font.size * 1.15
+    y = (NAME_BOX[1] + NAME_BOX[3]) / 2 - line_h * (len(lines) - 1) / 2
+    for line in lines:
+        d.text((NAME_BOX[0], y), line, font=font, fill=NAME_INK, anchor="lm")
+        y += line_h
+    if sector:
+        font, lines = _fit_lines(d, sector, SECTOR_BOX, range(30, 15, -1), 1, _bold)
+        d.text((SECTOR_BOX[0], (SECTOR_BOX[1] + SECTOR_BOX[3]) / 2), lines[0], font=font, fill=SECTOR_INK, anchor="lm")
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=88, optimize=True)
+    img.save(buf, "JPEG", quality=90, optimize=True)
     return buf.getvalue()
 
 
