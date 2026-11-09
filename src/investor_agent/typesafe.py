@@ -7,6 +7,7 @@ body {"model": "jev-latest", "state": "<text>", "questions": {"<id>": {"type": "
 """
 
 import logging
+import math
 from typing import Any
 
 from .http import Http
@@ -41,9 +42,21 @@ class Jev:
     def choice(self, state: str, instructions: str, criteria: dict[str, str], qid: str = "q") -> dict[str, Any]:
         """{"choice": str, "probabilities": {option: p}, "confidence": float, "model": str}."""
         data = self.ask(state, {qid: {"type": "choice", "instructions": instructions, "criteria": criteria}})
-        answer = data["answers"].get(qid) or {}
-        probs = answer.get("probabilities") or {}
-        if answer.get("choice") not in criteria or not isinstance(probs, dict):
+        answer = data["answers"].get(qid)
+        probs = answer.get("probabilities") if isinstance(answer, dict) else None
+        if not isinstance(answer, dict) or answer.get("choice") not in criteria or not isinstance(probs, dict) or not probs:
             raise TypeSafeError("Jev returned no valid choice")
-        return {"choice": answer["choice"], "probabilities": {k: float(v) for k, v in probs.items()},
-                "confidence": float(answer.get("confidence") or 0.0), "model": data.get("model", self.model)}
+        clean = {str(k): _unit_interval(v, "probability") for k, v in probs.items()}
+        if answer["choice"] not in clean:
+            raise TypeSafeError("Jev probabilities do not include the chosen option")
+        conf = answer.get("confidence")
+        return {"choice": answer["choice"], "probabilities": clean,
+                "confidence": 0.0 if conf is None else _unit_interval(conf, "confidence"),
+                "model": str(data.get("model") or self.model)}
+
+
+def _unit_interval(value: Any, what: str) -> float:
+    """A real number in [0, 1]. Strings, booleans, NaN, infinity and out-of-range values are a malformed answer."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise TypeSafeError(f"Jev returned an invalid {what}")
+    return float(value)

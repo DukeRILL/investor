@@ -28,6 +28,7 @@ STATUSES = ("VERIFIED", "UNVERIFIED", "ERROR")
 INVARIANT_FIELDS = ("id", "field", "text", "kind", "material")   # a recheck can never change what was claimed or how important it is
 RECHECK_FIELDS = ("status", "note", "source", "source_url", "source_quote", "source_value", "source_unit",
                   "article_value", "article_unit", "period", "fix")
+NUMERIC_KINDS = ("amount", "percent", "count", "deal", "leadership", "quote")
 CACHE_HOURS = 24          # the pages were read during research: re-reading them is free
 MAX_RECHECK_CALLS = 20
 PERCENT_TOLERANCE = 0.15  # percentage points
@@ -62,10 +63,11 @@ class Mode:
     max_claims: int            # «approx»: only the most important claims are checked
     max_tool_calls: int
     pct_tolerance: float = PERCENT_TOLERANCE   # percentage points
+    min_verified: int = 1      # the gate never passes on fewer verified MATERIAL claims than this (no «checked nothing»)
 
 
-STRICT = Mode("strict", 0.03, 0.80, 0.60, 2, 120, 40)                # «Разгадка бизнеса»: everything material, tight
-APPROX = Mode("approx", 0.10, 0.50, 0.30, 2, 20, 20, 1.0)            # «Школа единорогов»: the important numbers, approximate
+STRICT = Mode("strict", 0.03, 0.80, 0.60, 2, 120, 40, PERCENT_TOLERANCE, 3)                # «Разгадка бизнеса»: everything material, tight
+APPROX = Mode("approx", 0.10, 0.50, 0.30, 2, 20, 20, 1.0, 1)            # «Школа единорогов»: the important numbers, approximate
 
 _PATH_RE = re.compile(r"([a-z_]+)(?:\[(\d+)\])?")
 
@@ -145,9 +147,15 @@ def currency(unit: str) -> str | None:
     return None
 
 
-def _is_percent(unit: str, value) -> bool:
+_RATIO_WORDS = ("ratio", "fraction", "доля", "доли", "долей")
+
+
+def _pct_kind(unit: str, value) -> str | None:
+    """'percent' (%, «процент»), 'ratio' (a stated fraction: ratio / доля) or None (not stated)."""
     u = f"{unit} {value}".lower()
-    return "%" in u or "процент" in u or "percent" in u
+    if "%" in u or "процент" in u or "percent" in u:
+        return "percent"
+    return "ratio" if any(w in u for w in _RATIO_WORDS) else None
 
 
 def scale_problem(claim: dict, tolerance: float = 0.03, pct_tolerance: float = PERCENT_TOLERANCE) -> str | None:
@@ -156,21 +164,23 @@ def scale_problem(claim: dict, tolerance: float = 0.03, pct_tolerance: float = P
     sv, av = claim.get("source_value"), claim.get("article_value")
     su, au = str(claim.get("source_unit") or ""), str(claim.get("article_unit") or "")
     try:
-        src, art = number(sv, "source"), number(av, "article")
-        if src is not None and art is not None and re.sub(r"\s", "", str(sv)) == re.sub(r"\s", "", str(av)):
-            art = src  # the same printed number on both sides is the same number (only the unit can differ)
+        src, art = number(sv, "source"), number(av, "article")  # «1,999» is 1999 in a source, 1.999 in the article:
+        # the same printed token on both sides is NOT forced equal, the units decide (1,999 million = 1,999 млрд)
     except NumberError as exc:
         return str(exc)
     if src is None or art is None:
         return None
-    pct_s, pct_a = _is_percent(su, sv), _is_percent(au, av)
-    if pct_s or pct_a:
-        if pct_s != pct_a:  # 0.76 (a ratio) against 76 % or the same number with the unit missing on one side
-            p, q = (src, art) if pct_s else (art, src)
-            if min(abs(q * 100 - p), abs(q - p)) <= pct_tolerance:
-                return None
-            return f"доля/процент: источник {sv} {su}, в статье {av} {au}"
-        return None if abs(src - art) <= pct_tolerance else f"источник {src}%, в статье {art}%"
+    ks, ka = _pct_kind(su, sv), _pct_kind(au, av)
+    if ks or ka:
+        if ks and ka:  # both sides say what they are: percent points against percent points, a ratio is ×100
+            ps, pa = src * (100 if ks == "ratio" else 1), art * (100 if ka == "ratio" else 1)
+            return None if abs(ps - pa) <= pct_tolerance else f"источник {sv} {su}, в статье {av} {au} (доля/процент)"
+        p, q, kind = (src, art, ks) if ks else (art, src, ka)  # the other side has no unit: either reading is allowed
+        if kind == "percent":
+            ok = min(abs(q * 100 - p), abs(q - p)) <= pct_tolerance
+        else:
+            ok = min(abs(q * 100 - p * 100), abs(q - p * 100)) <= pct_tolerance
+        return None if ok else f"доля/процент: источник {sv} {su}, в статье {av} {au}"
     cs, ca = currency(su), currency(au)
     if cs and ca and cs != ca:  # converted between currencies: not comparable here
         return None
@@ -236,6 +246,8 @@ def _normalise(claims) -> list[dict]:
         c["status"] = status if status in STATUSES else "UNVERIFIED"
         c["id"] = str(c.get("id") or f"C{i + 1}")
         c["material"] = c.get("material") is not False
+        if c.get("kind") in NUMERIC_KINDS or re.search(r"\d", f"{c.get('article_value', '')}{c.get('source_value', '')}"):
+            c["material"] = True  # a numeric claim is never «harmless colour», whatever the model says
         out.append(c)
     return out
 
@@ -378,6 +390,39 @@ def summary(claims: list[dict]) -> dict:
             "open": [f"{c['id']}: {c.get('text', '')[:120]} — {c.get('status')} ({c.get('note', '')[:120]})" for c in open_]}
 
 
+def _headline_numbers(article: dict) -> dict[float, str]:
+    """Numbers of the headline / teaser (the part every reader quotes): value → field. Years are not facts to prove."""
+    out: dict[float, str] = {}
+    for field in ("headline", "teaser"):
+        text = article.get(field)
+        for v in _text_values(text if isinstance(text, str) else ""):
+            if abs(v) >= 10 and not (v == int(v) and 1900 <= v <= 2100):
+                out.setdefault(v, field)
+    return out
+
+
+def _cover_headline(claims_by_id: dict[str, dict], article: dict) -> None:
+    """Every number of the headline / teaser must stand under a VERIFIED material claim. The model cannot hide one by
+    never listing it: the server adds an open claim for it, and it goes back to DeepSeek like any other."""
+    covered = set()
+    for c in claims_by_id.values():
+        if c.get("material") and c.get("status") in ("VERIFIED", "REMOVED") and not str(c["id"]).startswith("COV-"):
+            try:
+                v = number(c.get("article_value"), "article")
+            except NumberError:
+                v = None
+            if v is not None:
+                covered.add(v)
+    for v, field in _headline_numbers(article).items():
+        cid = f"COV-{v:g}"
+        if v in covered:
+            claims_by_id.pop(cid, None)
+        elif cid not in claims_by_id:
+            claims_by_id[cid] = {"id": cid, "field": field, "text": f"число {v:g} из {field}", "kind": "amount",
+                                 "material": True, "status": "UNVERIFIED", "article_value": f"{v:g}",
+                                 "note": "число из заголовка/анонса не покрыто ни одним проверенным утверждением"}
+
+
 def _open(claims: list[dict]) -> list[dict]:
     return [c for c in claims if c.get("material") and c.get("status") not in ("VERIFIED", "REMOVED")]
 
@@ -410,6 +455,7 @@ def run(app: App, report: dict, registry: SourceRegistry, article: Callable[[dic
     jev_note: dict = {}
     rounds = 0
     while True:
+        _cover_headline(by_id, article(report))
         claims = list(by_id.values())
         _settle(report, claims, registry, mode)
         note = judge_with_jev(app, claims, registry, mode)
@@ -447,6 +493,9 @@ def run(app: App, report: dict, registry: SourceRegistry, article: Callable[[dic
     report["fact_ledger"] = claims
     out = summary(claims)
     out["jev"], out["rounds"] = jev_note, rounds
+    proven = sum(1 for c in claims if c.get("material") and c.get("status") == "VERIFIED" and c.get("jev"))
+    if proven < mode.min_verified and not jev_note.get("error"):  # «nothing material was checked» is not a pass
+        out["open"].append(f"проверено существенных утверждений: {proven}, нужно не меньше {mode.min_verified}")
     if jev_note.get("error"):
         out["open"].append(f"проверка TypeSafe Jev не выполнена: {jev_note['error']}")
     log.info("%s fact check: %s claims, %s verified, %s errors found, %s fixed, %s open after %s rounds", label,

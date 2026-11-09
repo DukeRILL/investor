@@ -193,7 +193,7 @@ def test_publish_adds_issue_terms_to_glossary_not_to_page(make_app):
                          {"term": "ARR", "definition": "Уже есть в глоссарии, поэтому не должен добавляться снова."}]
         return r
 
-    app = make_app(deepseek=FakeDeepSeek([stage1, report]))
+    app = make_app(deepseek=FakeDeepSeek([stage1, report]), http=FakeHttp())
     assert unicorn.prepare(app, "2026-11-09") == "ready"
     assert [t["term"] for t in app.store.draft_get("2026-11-09")["payload"]["report"]["glossary"]] == ["Acqui-hire"]
     assert unicorn.publish(app, "2026-11-09") == "published"

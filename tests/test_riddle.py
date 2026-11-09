@@ -58,9 +58,10 @@ def story(registry, videos=3, teaser=None):
 def fc_ok(reg, payload):
     """Independent fact check: everything verified."""
     assert "article" in payload and payload["article"]["sections"]
-    return {"claims": [{"id": "C1", "field": "headline", "text": "миллиард", "kind": "amount", "material": True,
+    return {"claims": [{"id": f"C{i}", "field": field, "text": "миллиард", "kind": "amount", "material": True,
                         "source": "S1", "source_value": "1", "source_unit": "billion USD", "article_value": "1",
-                        "article_unit": "млрд долларов", "source_quote": "content", "status": "VERIFIED", "fix": None}]}
+                        "article_unit": "млрд долларов", "source_quote": "content", "status": "VERIFIED", "fix": None}
+                       for i, field in enumerate(("headline", "teaser", "sections[0].body"), 1)]}
 
 
 def media_http():
@@ -219,7 +220,7 @@ def test_fact_check_gate_fixes_tenfold_error_and_blocks_open_claims(make_app):
                                     "article_unit": "млрд юаней"}) is None
 
     def wrong(reg, p):  # the model calls a tenfold error VERIFIED: the server's own arithmetic overrules it
-        return {"claims": [{"id": "C1", "field": "sections[0].body", "text": "выручка", "material": True, "source": "S1",
+        return {"claims": fc_ok(reg, p)["claims"][1:] + [{"id": "C1", "field": "sections[0].body", "text": "выручка", "material": True, "source": "S1",
                             "source_value": "369", "source_unit": "млн юаней", "article_value": "3,7",
                             "article_unit": "млрд юаней", "status": "VERIFIED",
                             "fix": {"find": "[S1] [S2] [S3]", "replace": "369 млн юаней [S1] [S2] [S3]"}}]}
@@ -242,7 +243,7 @@ def test_fact_check_gate_fixes_tenfold_error_and_blocks_open_claims(make_app):
     app = make_app(deepseek=FakeDeepSeek([lambda reg, p: story(reg), unverified]), http=media_http(),
                    images=CountingHost())
     assert riddle.prepare(app, "2026-11-10") == "blocked"
-    assert "фактчек: 1 существенных" in app.telegram.sent[-1]["html"]
+    assert "фактчек: 2 существенных" in app.telegram.sent[-1]["html"]
 
 
 def test_published_page_must_match_verified_numbers():
@@ -383,10 +384,83 @@ def test_telegraph_title_is_checked_with_the_content():
 
 
 def test_numeric_headline_passes_publication_and_publish_is_idempotent(make_app):
-    ds = FakeDeepSeek([lambda reg, p: {**story(reg), "headline": "Как Acme заработала 76,6% маржи"}, fc_ok])
+    def fc_pct(reg, p):
+        claims = fc_ok(reg, p)["claims"]
+        return {"claims": claims + [{**claims[0], "id": "C9", "field": "headline", "kind": "percent",
+                                     "source_value": "76.6", "source_unit": "%", "article_value": "76,6",
+                                     "article_unit": "%"}]}
+    ds = FakeDeepSeek([lambda reg, p: {**story(reg), "headline": "Как Acme заработала 76,6% маржи"}, fc_pct])
     app = make_app(deepseek=ds, http=media_http(), images=CountingHost())
     assert riddle.prepare(app, "2026-11-09") == "ready"
     assert riddle.publish(app, "2026-11-09") == "published"  # the title is read back with get_page_full
     assert riddle.publish(app, "2026-11-09") == "already_published"
     posts = [m for m in app.telegram.sent if m["html"].startswith("<b>Как Acme заработала 76,6% маржи</b>")]
     assert len(posts) == 1  # the second publish() sent nothing
+
+
+# --- second Codex review (225f01d): four defects -------------------------------------------------------
+def test_same_printed_token_is_not_forced_equal_across_locales():
+    from investor_agent.factgate import scale_problem
+    # source «1,999» (English: 1999) against article «1,999» (Russian: 1.999) in the same unit is a ×1000 error
+    assert "в 1000 раз" in scale_problem({"source_value": "1,999", "source_unit": "yuan", "article_value": "1,999",
+                                           "article_unit": "юаней"})
+    # …but 1,999 million = 1,999 млрд is not: the units carry the scale
+    assert scale_problem({"source_value": "1,999", "source_unit": "million yuan", "article_value": "1,999",
+                          "article_unit": "млрд юаней"}) is None
+
+
+def test_explicit_ratio_and_percent_are_never_equal_by_digits():
+    from investor_agent.factgate import scale_problem
+    assert scale_problem({"source_value": "76.6", "source_unit": "%", "article_value": "76.6", "article_unit": "ratio"})
+    assert scale_problem({"source_value": "0.766", "source_unit": "ratio", "article_value": "0.766", "article_unit": "%"})
+    assert scale_problem({"source_value": "0.766", "source_unit": "ratio", "article_value": "76,6", "article_unit": "%"}) is None
+    assert scale_problem({"source_value": "76.6", "source_unit": "%", "article_value": "76,6", "article_unit": "%"}) is None
+    assert scale_problem({"source_value": "0.766", "source_unit": "ratio", "article_value": "0,766", "article_unit": "доля"}) is None
+
+
+def test_malformed_jev_answers_never_confirm():
+    import pytest
+    from investor_agent.typesafe import Jev, TypeSafeError
+
+    class H:
+        def __init__(self, answer):
+            self.answer = answer
+
+        def request(self, *a, **kw):
+            return {"model": "jev", "answers": {"q": self.answer}}
+
+    crit = {"supported": "", "contradicted": "", "insufficient": ""}
+    good = {"choice": "supported", "confidence": 0.9, "probabilities": {"supported": 0.95, "contradicted": 0.03}}
+    assert Jev(H(good), "k").choice("s", "i", crit, "q")["confidence"] == 0.9
+    for bad in ({**good, "confidence": "Infinity"}, {**good, "confidence": float("inf")}, {**good, "confidence": 7},
+                {**good, "confidence": True}, {**good, "probabilities": {"supported": "Infinity"}},
+                {**good, "probabilities": {"supported": -0.2}}, {**good, "probabilities": {"supported": float("nan")}},
+                {**good, "probabilities": {"contradicted": 0.1}}, {**good, "probabilities": {}}, {**good, "choice": "other"}, None):
+        with pytest.raises(TypeSafeError):
+            Jev(H(bad), "k").choice("s", "i", crit, "q")
+
+
+def test_a_single_non_material_claim_cannot_pass_the_gate(make_app):
+    def nothing(reg, p):  # one «harmless» VERIFIED claim, no source, no Jev — the reported bypass
+        return {"claims": [{"id": "C1", "field": "headline", "text": "миллиард", "material": False, "status": "VERIFIED"}]}
+    app = make_app(deepseek=FakeDeepSeek([lambda reg, p: story(reg), nothing, nothing, nothing]), http=media_http(),
+                   images=CountingHost())
+    assert riddle.prepare(app, "2026-11-09") == "blocked"
+    report = app.store.draft_get("riddle:2026-11-09")["payload"]["report"]
+    assert report["fact_check"]["open"] and "нужно не меньше" in " ".join(report["fact_check"]["open"])
+
+
+def test_numeric_claims_are_material_whatever_the_model_says():
+    from investor_agent.factgate import _normalise
+    out = _normalise([{"id": "C1", "material": False, "kind": "amount", "status": "VERIFIED"},
+                      {"id": "C2", "material": False, "article_value": "76,6", "status": "VERIFIED"},
+                      {"id": "C3", "material": False, "kind": "other", "status": "VERIFIED"}])
+    assert [c["material"] for c in out] == [True, True, False]
+
+
+def test_numbers_of_the_headline_must_be_covered_by_a_verified_claim(make_app):
+    ds = FakeDeepSeek([lambda reg, p: {**story(reg), "headline": "Как Acme заработала 76,6% маржи"}, fc_ok, fc_ok, fc_ok])
+    app = make_app(deepseek=ds, http=media_http(), images=CountingHost())
+    assert riddle.prepare(app, "2026-11-09") == "blocked"  # fc_ok never lists «76,6»: the server opens a claim for it
+    ledger = app.store.draft_get("riddle:2026-11-09")["payload"]["report"]["fact_ledger"]
+    assert any(c["id"] == "COV-76.6" and c["status"] != "VERIFIED" for c in ledger)
