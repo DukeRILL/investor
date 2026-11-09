@@ -427,9 +427,26 @@ COVER_PATH = Path(__file__).resolve().parents[3] / "assets" / "unicorn_cover.jpg
 CHANNEL_URL = "https://t.me/investor_duker"
 
 
-def _channel_button() -> dict:
-    return {"tag": "p", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
-        {"tag": "strong", "children": ["✈️ Перейти на канал"]}, " — ", {"tag": "strong", "children": ["🦄ШКОЛА ЕДИНОРОГОВ. Ежедневные разборы взлетающих бизнесов"]}]}]}
+LOGO_PATH = COVER_PATH.with_name("tg_logo.png")  # 96 px Telegram logo, ~6 KB
+
+
+def _channel_button(logo: str | None = None) -> list:
+    """Telegraph has no buttons: the logo (own line, Telegraph shows images as blocks) and a bold link."""
+    link = {"tag": "p", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
+        {"tag": "strong", "children": ["Перейти на канал"]}, " — ",
+        {"tag": "strong", "children": ["🦄ШКОЛА ЕДИНОРОГОВ. Ежедневные разборы взлетающих бизнесов"]}]}]}
+    if not logo:
+        return [link]
+    return [{"tag": "figure", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
+        {"tag": "img", "attrs": {"src": logo}}]}]}, link]
+
+
+def logo_url(app: App) -> str | None:
+    try:
+        return _uploader(app)(LOGO_PATH.read_bytes(), "image/png")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("logo upload failed: %s", type(exc).__name__)
+        return None
 
 
 def cover_url(app: App) -> str | None:
@@ -442,7 +459,8 @@ def cover_url(app: App) -> str | None:
         return None
 
 
-def build_page(report: dict, registry: SourceRegistry, date_str: str, cover: str | None = None) -> tuple[str, list]:
+def build_page(report: dict, registry: SourceRegistry, date_str: str, cover: str | None = None,
+               logo: str | None = None) -> tuple[str, list]:
     title = f"ШКОЛА ЕДИНОРОГОВ — {date_str}. КОМПАНИЯ ДНЯ: {report['company_name']}"
     media = report.get("media_resolved") or []
     hero = hero_photo(report)
@@ -450,7 +468,7 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, cover: str
     nodes: list = []
     if cover:
         nodes.append({"tag": "figure", "children": [{"tag": "img", "attrs": {"src": cover}}]})
-        nodes.append(_channel_button())
+        nodes.extend(_channel_button(logo))
     if report.get("subtitle"):
         nodes.append({"tag": "p", "children": [{"tag": "b", "children": [report["subtitle"]]}]})
     if report.get("facts_line"):
@@ -512,7 +530,7 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, cover: str
         {"tag": "li", "children": [f"[{s.id[1:]}] ", {"tag": "a", "attrs": {"href": s.url}, "children": [s.title or s.url]},
                                    f" — {s.publisher}" + (f", {s.date[:10]}" if s.date else "")]}
         for s in registry.sources.values()]})
-    nodes.append(_channel_button())
+    nodes.extend(_channel_button(logo))
     return title, nodes
 
 
@@ -630,7 +648,7 @@ def publish(app: App, today: str | None = None) -> str:
     try:
         if not draft.get("page_url"):
             prune_dead_media(report, app.http)  # dead pictures/videos are dropped just before the page is built
-        url = draft.get("page_url") or create_pages(app.telegraph, *build_page(report, registry, date_str, cover_url(app)))
+        url = draft.get("page_url") or create_pages(app.telegraph, *build_page(report, registry, date_str, cover_url(app), logo_url(app)))
         app.store.draft_mark(today, "ready", page_url=url)
         mid = _send_post(app, report, date_str, url)
     except Exception as exc:  # noqa: BLE001
@@ -658,7 +676,7 @@ def preview(app: App, today: str | None = None) -> str:
     payload = draft["payload"]
     report = payload["report"]
     date_str = ru_date(datetime.fromisoformat(today))
-    title, nodes = build_page(report, _registry_from(payload["sources"]), date_str, cover_url(app))
+    title, nodes = build_page(report, _registry_from(payload["sources"]), date_str, cover_url(app), logo_url(app))
     url = create_pages(app.telegraph, title, nodes)
     app.notify_admin(f"Драфт Школы единорогов ({today}) с новой шапкой: {url}")
     return url
