@@ -22,7 +22,7 @@ from ..storage import norm_name
 from ..telegram import TelegramError
 from ..textfmt import reading_line, text_to_nodes, visible_len
 from ..timeutil import PeakHoursError, now_bj, ru_date
-from ..unicorn.pipeline import _figure, _interleave, _registry_from, _uploader, create_pages
+from ..unicorn.pipeline import _channel_button, _figure, logo_url, _interleave, _registry_from, _uploader, create_pages
 from ..unicorn.precheck import image_alive, video_alive
 from . import visuals
 
@@ -331,7 +331,7 @@ def channel_url(app: App) -> str:
 
 
 def build_page(report: dict, registry: SourceRegistry, date_str: str, channel: str,
-               header: str | None = None) -> tuple[str, list]:
+               header: str | None = None, button: str | None = None) -> tuple[str, list]:
     title = f"{RUBRIC}: {report['headline']}"[:256]
     top = hero(report)
     by_act: dict[str, list] = {}
@@ -371,6 +371,7 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, channel: s
         for s in registry.sources.values()]})
     nodes.append({"tag": "p", "children": ["Новые расследования каждый день — подписывайтесь на ",
                                            {"tag": "a", "attrs": {"href": channel}, "children": ["«Школу единорогов»"]}, "."]})
+    nodes.extend(_channel_button(button, channel))  # the same button as at the end of Unicorn School articles
     return title, nodes
 
 
@@ -526,6 +527,19 @@ def preview_url(app: App, report: dict, registry: SourceRegistry) -> str | None:
     return cover_url(app)
 
 
+BUTTON_KEY = "channel_button_url"
+
+
+def button_url(app: App) -> str | None:
+    """The channel button picture (shared with Unicorn School), uploaded once and remembered."""
+    url = app.store.get(BUTTON_KEY)
+    if not url:
+        url = logo_url(app)
+        if url:
+            app.store.set(BUTTON_KEY, url)
+    return url
+
+
 def header_url(app: App) -> str | None:
     return _hosted(app, HEADER_KEY, HEADER_FILE)
 
@@ -557,7 +571,7 @@ def _verify_pages(app: App, url: str) -> tuple[int, int]:
     while url and url not in seen and len(seen) < 5:
         seen.add(url)
         nodes = app.telegraph.get_page(url)
-        i, v = count_page_media(nodes, {app.store.get(HEADER_KEY) or ""})
+        i, v = count_page_media(nodes, {app.store.get(HEADER_KEY) or "", app.store.get(BUTTON_KEY) or ""})
         imgs, vids = imgs + i, vids + v
         url = _next_part(nodes)
     return imgs, vids
@@ -599,7 +613,7 @@ def publish(app: App, today: str | None = None) -> str:
                 app.store.draft_save(key, "blocked", payload, error="; ".join(missing))
                 app.notify_admin(f"{RUBRIC}: {today} BLOCKED перед публикацией — " + "; ".join(missing))
                 return "blocked"
-            url = create_pages(app.telegraph, *build_page(report, registry, date_str, channel_url(app), header_url(app)))
+            url = create_pages(app.telegraph, *build_page(report, registry, date_str, channel_url(app), header_url(app), button_url(app)))
             app.store.draft_mark(key, "ready", page_url=url)
         status = publication_status(report, _verify_pages(app, url))
         payload["status"] = status
