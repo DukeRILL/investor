@@ -427,18 +427,11 @@ def article_text(report: dict) -> str:
     return "\n".join(parts)
 
 
-def classification_line(report: dict) -> str:
-    """Owner's rule: the post always opens with the section and the type of the company."""
-    return (f"<b>Раздел:</b> {escape(str(report.get('category') or report.get('industry') or '—'))} · "
-            f"<b>Тип:</b> {escape(str(report.get('business_type') or '—'))}")
-
-
 def build_post(report: dict, date_str: str, channel_name: str = "", question: bool = True) -> str:
-    """Section and type first (owner's rule), the teaser, the discussion question (§17), the reading time."""
+    """Owner's rule (2026-11-09): the post starts straight with the headline, no lines above it; then the teaser, the
+    discussion question (§17), the reading time. Section, type and rubric name live on the picture."""
     q = str(report.get("discussion_question") or "").strip()
-    return (f"{classification_line(report)}\n"
-            f"🔎 <b>{RUBRIC.upper()}</b> · {escape(date_str)}\n"
-            f"<b>{escape(report['headline'])}</b>\n\n"
+    return (f"<b>{escape(report['headline'])}</b>\n\n"
             f"{escape(report.get('teaser', ''))}\n\n"
             + (f"💬 <i>{escape(q)}</i>\n\n" if q and question else "")
             + reading_line(article_text(report)))

@@ -119,9 +119,9 @@ def test_full_cycle_draft_goes_to_admin_with_12_images_and_3_videos(make_app):
     post = app.telegram.sent[0]
     assert post["chat"] == "111"  # RIDDLE_PUBLISH_MODE defaults to draft: admin chat, never the channel
     assert post["photo"].startswith("https://res.cloudinary.com/test/")  # rubric picture + company name, sector, logo
-    assert post["html"].startswith("<b>Раздел:</b> Логистика · <b>Тип:</b> B2B SaaS по подписке\n")
+    assert post["html"].startswith("<b>Как скучная накладная стала бизнесом на миллиард</b>\n")  # straight with the headline
     assert post["button"] == ("🔎 Читать расследование", "https://telegra.ph/test-page")
-    assert "РАЗГАДКА БИЗНЕСА" in post["html"] and "Время чтения:" in post["html"] and "ТРЕБУЕТ ПРОВЕРКИ" not in post["html"]
+    assert "Раздел:" not in post["html"] and "РАЗГАДКА БИЗНЕСА" not in post["html"] and "Время чтения:" in post["html"] and "ТРЕБУЕТ ПРОВЕРКИ" not in post["html"]
     assert "💬 <i>Вы бы отказались от наценки ради экосистемы?</i>" in post["html"]
     title, nodes = app.telegraph.pages[0]
     assert title.startswith("Разгадка бизнеса: ")
