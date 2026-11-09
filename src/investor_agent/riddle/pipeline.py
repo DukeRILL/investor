@@ -50,6 +50,7 @@ QUALITY_WEIGHTS = {"interest": 0.20, "depth": 0.20, "mindset": 0.20, "analytics"
 TEASER_MIN, TEASER_MAX = 350, 700  # §17: about 400–650 characters
 CAPTION_LIMIT = 1000
 SEARCH_CACHE_HOURS = 24
+MAX_OUTPUT_TOKENS = 64000          # the 3,000-word article as JSON is far over the API default of 4,096 tokens (cut the first run)
 ARCHIVE_KEY = "riddle_archive"
 PREVIEW_FILE = Path(__file__).with_name("preview.jpg")  # owner template with fields for logo, name, sector (2026-11-09)
 COVER_FILE = Path(__file__).with_name("cover.jpg")  # owner's rubric cover (2026-11-09): the picture of every post
@@ -504,7 +505,7 @@ def _prepare(app: App, today: str, company: str | None = None) -> str:
     if company:  # the owner chose the company (manual run): skip Step 1
         payload["company_chosen_by_editor"] = company
     report = ds.research(s.deepseek_model_pro, app.prompt("business_riddle"), payload, registry, max_tool_calls=60,
-                         cache_ttl=SEARCH_CACHE_HOURS)
+                         cache_ttl=SEARCH_CACHE_HOURS, max_tokens=MAX_OUTPUT_TOKENS)
     clean_report(report, registry)
     errors = validate_story(report, registry, excluded)
     if errors:
@@ -512,7 +513,7 @@ def _prepare(app: App, today: str, company: str | None = None) -> str:
             **payload, "known_sources": registry.brief(), "previous_draft": report, "fix_these_problems": errors,
             "already_cited": registry.cited_ids(*[x.get("body", "") for x in report.get("sections") or []
                                                   if isinstance(x, dict)]),
-        }, registry, max_tool_calls=25, cache_ttl=SEARCH_CACHE_HOURS)
+        }, registry, max_tool_calls=25, cache_ttl=SEARCH_CACHE_HOURS, max_tokens=MAX_OUTPUT_TOKENS)
         clean_report(report, registry)
         errors = validate_story(report, registry, excluded)
     if errors:

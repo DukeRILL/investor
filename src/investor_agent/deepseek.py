@@ -204,7 +204,7 @@ class DeepSeekClient:
 
     def research(self, model: str, system: str, payload: Any, registry: SourceRegistry,
                  max_tool_calls: int = 40, page_chars: int = 12000, temperature: float = 0.3,
-                 cache_ttl: float = 0) -> dict:
+                 cache_ttl: float = 0, max_tokens: int | None = None) -> dict:
         """Let the model search and read pages, then return its final JSON answer."""
         messages: list[dict] = [{"role": "system", "content": system},
                                 {"role": "user", "content": _dump(payload)}]
@@ -213,7 +213,8 @@ class DeepSeekClient:
             tools = AGENT_TOOLS if calls < max_tool_calls else None
             if tools is None:
                 messages.append({"role": "user", "content": "Tool budget is exhausted. Return the final JSON now."})
-            message = self.chat(model, messages, tools=tools, json_mode=tools is None, temperature=temperature)
+            message = self.chat(model, messages, tools=tools, json_mode=tools is None, temperature=temperature,
+                               max_tokens=max_tokens)
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
                 return parse_json(message.get("content") or "")
