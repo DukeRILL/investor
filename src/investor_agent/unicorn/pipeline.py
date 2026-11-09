@@ -463,7 +463,7 @@ def cover_url(app: App) -> str | None:
 
 
 def build_page(report: dict, registry: SourceRegistry, date_str: str, cover: str | None = None,
-               logo: str | None = None) -> tuple[str, list]:
+               logo: str | None = None, channel: str = CHANNEL_URL) -> tuple[str, list]:
     title = f"ШКОЛА ЕДИНОРОГОВ — {date_str}. КОМПАНИЯ ДНЯ: {report['company_name']}"
     media = report.get("media_resolved") or []
     hero = hero_photo(report)
@@ -532,7 +532,7 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, cover: str
         {"tag": "li", "children": [f"[{s.id[1:]}] ", {"tag": "a", "attrs": {"href": s.url}, "children": [s.title or s.url]},
                                    f" — {s.publisher}" + (f", {s.date[:10]}" if s.date else "")]}
         for s in registry.sources.values()]})
-    nodes.extend(_channel_button(logo, text_link=False))
+    nodes.extend(_channel_button(logo, channel, text_link=False))  # channel: the personal invite link
     return title, nodes
 
 
@@ -689,9 +689,10 @@ def publish(app: App, today: str | None = None) -> str:
         url = draft.get("page_url")
         if not url:
             prune_dead_media(report, app.http)  # dead pictures/videos are dropped just before the page is built
-            title, nodes = build_page(report, registry, date_str, cover_url(app), logo_url(app))
+            href = growth_publish.begin(app, today, report)  # the article's personal invite link (None: growth off)
+            title, nodes = build_page(report, registry, date_str, cover_url(app), logo_url(app), href or CHANNEL_URL)
             pkey = f"unicorn_pages:{today}"
-            url = create_pages(app.telegraph, title, nodes + growth_publish.begin(app, today, report),  # + CTA
+            url = create_pages(app.telegraph, title, nodes + growth_publish.block(href),  # banner, then the block
                                (lambda: json.loads(app.store.get(pkey) or "{}"),
                                 lambda st: app.store.set(pkey, json.dumps(st))))
         app.store.draft_mark(today, "ready", page_url=url)

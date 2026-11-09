@@ -70,6 +70,26 @@ def test_publish_adds_cta_share_buttons_and_records_everything(make_app):
     assert app.telegram.invites == ["telegraph-cta-2026-11-09"]
 
 
+def test_banner_and_phrase_share_one_personal_invite_link(make_app):
+    app = published_app(make_app)
+    nodes = app.telegraph.by_url["https://telegra.ph/test-page"][1]
+    hrefs = []
+
+    def walk(n):
+        if isinstance(n, dict):
+            if n.get("tag") == "a" and n["attrs"]["href"].startswith("https://t.me/+"):
+                hrefs.append((n["attrs"]["href"], flat(n)))
+            for c in n.get("children", []):
+                walk(c)
+    for n in nodes:
+        walk(n)
+    assert [h for h, _ in hrefs] == ["https://t.me/+inv1", "https://t.me/+inv1"]  # banner image link, phrase link
+    assert "img" in hrefs[0][1] and "ШКОЛА ЕДИНОРОГОВ" in hrefs[1][1]
+    assert app.telegram.invites == ["telegraph-cta-2026-11-09"]  # one invite link serves both
+    tags = [n.get("tag") for n in nodes]
+    assert tags.index("figure", len(tags) - 6) < tags.index("h4") and "hr" not in tags[-6:]  # banner, block, share
+
+
 def test_republish_and_retry_do_not_duplicate_the_block(make_app):
     app = published_app(make_app)
     assert unicorn.publish(app, DAY) == "already_published"
@@ -180,7 +200,7 @@ def test_redirect_serves_only_stored_safe_targets_and_dedups(make_app):
 def test_redirect_href_used_when_public_base_url_is_set(make_app):
     app = make_app()
     app.settings.public_base_url = "https://go.example.com/"
-    nodes = flat(gpub.begin(app, DAY, {"company_name": "Acme"}))
+    nodes = flat(gpub.block(gpub.begin(app, DAY, {"company_name": "Acme"})))
     assert "https://go.example.com/go/" in nodes
 
 

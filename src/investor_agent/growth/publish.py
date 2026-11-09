@@ -15,18 +15,23 @@ def enabled(app) -> bool:
     return app.settings.growth_enabled
 
 
-def begin(app, issue_date: str, report: dict) -> list:
-    """Before the Telegraph page is created: the publication row, its own invite link, and the subscribe block."""
+def begin(app, issue_date: str, report: dict) -> str | None:
+    """Before the Telegraph page is built: the publication row and the article's personal invite link. Returns the
+    href for the banner and the subscribe phrase (the public channel link if anything fails), None when growth is off."""
     if not enabled(app):
-        return []
+        return None
     try:
         gdb = db(app)
         pub_id = gdb.publication_upsert(issue_date, report["company_name"])
-        href = public_href(app, make_link(app, pub_id, issue_date, "telegraph", "cta"))
-        return share.subscribe_nodes(href)
+        return public_href(app, make_link(app, pub_id, issue_date, "telegraph", "cta"))
     except Exception as exc:  # noqa: BLE001
-        log.warning("growth.begin failed (%s: %s); plain subscribe link", type(exc).__name__, exc)
-        return share.subscribe_nodes(CHANNEL_URL)
+        log.warning("growth.begin failed (%s: %s); plain channel link", type(exc).__name__, exc)
+        return CHANNEL_URL
+
+
+def block(href: str | None) -> list:
+    """The subscribe text that follows the banner (the share block is appended later, when the URL is known)."""
+    return share.subscribe_nodes(href) if href else []
 
 
 def _report(app, issue_date: str) -> dict:
