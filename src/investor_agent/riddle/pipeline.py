@@ -44,6 +44,8 @@ SEARCH_CACHE_HOURS = 24
 ARCHIVE_KEY = "riddle_archive"
 COVER_FILE = Path(__file__).with_name("cover.jpg")  # owner's rubric cover (2026-11-09): the picture of every post
 COVER_KEY = "riddle_cover_url"
+HEADER_FILE = Path(__file__).with_name("header.jpg")  # owner's article header (2026-11-09), 1000 px JPEG ≈200 KB
+HEADER_KEY = "riddle_header_url"
 LICENSE_PAGE = "кадр со страницы-источника; права на использование не подтверждены — проверить перед публикацией в канал"
 LICENSE_OWN = "собственная визуализация по данным выпуска"
 LICENSE_PIXABAY = "Pixabay Content License (бесплатно, коммерческое использование)"
@@ -328,7 +330,8 @@ def channel_url(app: App) -> str:
     return f"https://t.me/{chat.lstrip('@')}" if chat.startswith("@") else "https://t.me/investor_duker"
 
 
-def build_page(report: dict, registry: SourceRegistry, date_str: str, channel: str) -> tuple[str, list]:
+def build_page(report: dict, registry: SourceRegistry, date_str: str, channel: str,
+               header: str | None = None) -> tuple[str, list]:
     title = f"{RUBRIC}: {report['headline']}"[:256]
     top = hero(report)
     by_act: dict[str, list] = {}
@@ -338,7 +341,8 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, channel: s
     videos: dict[str, list] = {}
     for v in report.get("videos_resolved") or []:
         videos.setdefault(v.get("act") or "evidence", []).append(_figure({**v, "kind": "video"}))
-    nodes: list = [{"tag": "p", "children": [{"tag": "i", "children": [f"«{RUBRIC}» · Школа единорогов · {date_str}"]}]}]
+    nodes: list = [{"tag": "figure", "children": [{"tag": "img", "attrs": {"src": header}}]}] if header else []
+    nodes.append({"tag": "p", "children": [{"tag": "i", "children": [f"«{RUBRIC}» · Школа единорогов · {date_str}"]}]})
     if (report.get("concept") or {}).get("riddle"):
         nodes.append({"tag": "p", "children": [{"tag": "b", "children": [report["concept"]["riddle"]]}]})
     if top:
@@ -370,8 +374,8 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, channel: s
     return title, nodes
 
 
-def count_page_media(nodes: list) -> tuple[int, int]:
-    """(unique images, unique YouTube embeds) in Telegraph nodes."""
+def count_page_media(nodes: list, ignore: set[str] = frozenset()) -> tuple[int, int]:
+    """(unique images, unique YouTube embeds) in Telegraph nodes; the rubric header is not a story picture."""
     imgs, vids = set(), set()
 
     def walk(items):
@@ -379,7 +383,7 @@ def count_page_media(nodes: list) -> tuple[int, int]:
             if not isinstance(n, dict):
                 continue
             src = (n.get("attrs") or {}).get("src", "")
-            if n.get("tag") == "img" and src:
+            if n.get("tag") == "img" and src and src not in ignore:
                 imgs.add(src)
             elif n.get("tag") == "iframe" and "youtube" in src:
                 vids.add(src)
@@ -489,18 +493,26 @@ def _prepare(app: App, today: str, company: str | None = None) -> str:
     return state
 
 
-def cover_url(app: App) -> str | None:
-    """The rubric cover, uploaded to the image host once and remembered."""
-    url = app.store.get(COVER_KEY)
+def _hosted(app: App, key: str, path: Path) -> str | None:
+    """A rubric picture uploaded to the image host once and remembered."""
+    url = app.store.get(key)
     if url:
         return url
     try:
-        url = _uploader(app)(COVER_FILE.read_bytes(), "image/jpeg")
-    except Exception as exc:  # noqa: BLE001 - without the cover the post falls back to the company picture
-        log.warning("riddle cover upload failed: %s", type(exc).__name__)
+        url = _uploader(app)(path.read_bytes(), "image/jpeg")
+    except Exception as exc:  # noqa: BLE001 - the post / page then go without it
+        log.warning("riddle picture upload failed: %s", type(exc).__name__)
         return None
-    app.store.set(COVER_KEY, url)
+    app.store.set(key, url)
     return url
+
+
+def cover_url(app: App) -> str | None:
+    return _hosted(app, COVER_KEY, COVER_FILE)
+
+
+def header_url(app: App) -> str | None:
+    return _hosted(app, HEADER_KEY, HEADER_FILE)
 
 
 def _send_post(app: App, report: dict, date_str: str, url: str) -> int:
@@ -530,7 +542,7 @@ def _verify_pages(app: App, url: str) -> tuple[int, int]:
     while url and url not in seen and len(seen) < 5:
         seen.add(url)
         nodes = app.telegraph.get_page(url)
-        i, v = count_page_media(nodes)
+        i, v = count_page_media(nodes, {app.store.get(HEADER_KEY) or ""})
         imgs, vids = imgs + i, vids + v
         url = _next_part(nodes)
     return imgs, vids
@@ -572,7 +584,7 @@ def publish(app: App, today: str | None = None) -> str:
                 app.store.draft_save(key, "blocked", payload, error="; ".join(missing))
                 app.notify_admin(f"{RUBRIC}: {today} BLOCKED перед публикацией — " + "; ".join(missing))
                 return "blocked"
-            url = create_pages(app.telegraph, *build_page(report, registry, date_str, channel_url(app)))
+            url = create_pages(app.telegraph, *build_page(report, registry, date_str, channel_url(app), header_url(app)))
             app.store.draft_mark(key, "ready", page_url=url)
         status = publication_status(report, _verify_pages(app, url))
         payload["status"] = status
