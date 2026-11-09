@@ -16,17 +16,18 @@ def enabled(app) -> bool:
 
 
 def begin(app, issue_date: str, report: dict) -> list:
-    """Before the Telegraph page is created: the publication row, its own invite link, and the subscribe block."""
+    """Before the Telegraph page is created: the publication row (+ the 'cta' marker row) and the subscribe text.
+    No link is added to the page and no invite link is created: the channel banner is the call to action."""
     if not enabled(app):
         return []
     try:
         gdb = db(app)
         pub_id = gdb.publication_upsert(issue_date, report["company_name"])
-        href = public_href(app, make_link(app, pub_id, issue_date, "telegraph", "cta"))
-        return share.subscribe_nodes(href)
+        gdb.link_get_or_create(pub_id, "telegraph", "cta", CHANNEL_URL, f"issue-{issue_date}")  # marker, no invite
+        return share.subscribe_nodes()
     except Exception as exc:  # noqa: BLE001
         log.warning("growth.begin failed (%s: %s); plain subscribe link", type(exc).__name__, exc)
-        return share.subscribe_nodes(CHANNEL_URL)
+        return share.subscribe_nodes()
 
 
 def _report(app, issue_date: str) -> dict:

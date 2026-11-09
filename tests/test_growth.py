@@ -6,7 +6,7 @@ from conftest import Crash, FakeDeepSeek, FakeTelegram
 from test_agents import cand, good_report
 
 from investor_agent.growth import collect, publish as gpub, redirect, report as greport, share
-from investor_agent.growth.links import db, target_allowed
+from investor_agent.growth.links import db, make_link, target_allowed
 from investor_agent.http import HttpError
 from investor_agent.unicorn import pipeline as unicorn
 
@@ -18,6 +18,8 @@ def published_app(make_app, **kw):
     app = make_app(deepseek=FakeDeepSeek([stage1, lambda reg, p: good_report(reg)]), **kw)
     assert unicorn.prepare(app, DAY) == "ready"
     assert unicorn.publish(app, DAY) == "published"
+    if kw.get("mode") != "draft":  # a link for an external source, made on demand (growth-link)
+        make_link(app, db(app).publication_by_date(DAY)["id"], DAY, "telegraph", "manual")
     return app
 
 
@@ -44,20 +46,20 @@ def test_hook_comes_from_the_article_and_differs_between_articles():
 
 
 def test_subscribe_block_has_approved_text_and_only_supported_tags():
-    nodes = share.subscribe_nodes("https://t.me/+abc")
+    nodes = share.subscribe_nodes()
     text = flat(nodes)
     assert "Каждый день разбираем бизнес, который смог вырасти до миллиардной оценки." in text
     assert "Подписывайтесь на „Школу единорогов“, чтобы находить идеи для собственного бизнеса." in text
-    assert "Подписаться на Школу единорогов" in text
-    tags = {n["tag"] for n in nodes} | {"a", "b"}
-    assert tags <= {"hr", "p", "a", "b", "h4", "br"}
+    assert "Подписаться на Школу единорогов" not in text and '"a"' not in text  # no link: the banner is the CTA
+    assert {n["tag"] for n in nodes} <= {"hr", "p"}
 
 
 # --- publication integration ----------------------------------------------------------------------------------
 def test_publish_adds_cta_share_buttons_and_records_everything(make_app):
     app = published_app(make_app)
     page_nodes = flat(app.telegraph.by_url["https://telegra.ph/test-page"][1])
-    assert "Подписаться на Школу единорогов" in page_nodes and "https://t.me/+inv1" in page_nodes
+    assert "Подписывайтесь на „Школу единорогов“" in page_nodes and "Подписаться на Школу единорогов" not in page_nodes
+    assert "t.me/+" not in page_nodes
     assert "Поделиться разбором" in page_nodes and "t.me/share/url" in page_nodes and "wa.me" in page_nodes
     gdb = db(app)
     pub = gdb.publication_by_date(DAY)
@@ -65,7 +67,7 @@ def test_publish_adds_cta_share_buttons_and_records_everything(make_app):
     rows = app.telegram.buttons[1]
     assert rows[0][0][0] == "📖 Читать разбор" and rows[1][0][0] == "📤 Отправить другу"
     assert "https%3A%2F%2Ft.me%2Finvestor_duker%2F1" in rows[1][0][1]  # shares the channel post
-    assert app.telegram.invites == ["telegraph-cta-2026-11-09"]
+    assert app.telegram.invites == ["telegraph-manual-2026-11-09"]  # only the explicit one; publishing makes none
 
 
 def test_republish_and_retry_do_not_duplicate_the_block(make_app):
@@ -75,7 +77,7 @@ def test_republish_and_retry_do_not_duplicate_the_block(make_app):
     assert gpub.ensure_share_block(app, pub) is True
     assert gpub.ensure_share_block(app, pub) is True
     assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Поделиться разбором") == 1
-    assert len(app.telegraph.edited) == 1 and len(app.telegram.invites) == 1
+    assert len(app.telegraph.edited) == 1
 
 
 def test_telegraph_edit_failure_does_not_break_publication_and_is_retried(make_app):
@@ -94,7 +96,6 @@ def test_telegraph_edit_failure_does_not_break_publication_and_is_retried(make_a
 def test_draft_mode_creates_no_invite_links_and_falls_back_to_public_link(make_app):
     app = published_app(make_app, mode="draft")
     assert not getattr(app.telegram, "invites", [])
-    assert "https://t.me/investor_duker" in flat(app.telegraph.by_url["https://telegra.ph/test-page"][1])
 
 
 def test_chain_of_parts_gets_share_block_on_last_part_only(make_app):
@@ -152,7 +153,7 @@ def test_get_updates_failure_is_recorded_and_not_raised(make_app):
 
 def test_opening_a_link_is_not_a_subscription(make_app):
     app = published_app(make_app)
-    link = db(app).links()[0]
+    link = db(app).links()[-1]
     db(app).add_traffic(link["id"], "click", "c1")
     assert db(app).subscription_counts() == {}
 
@@ -160,7 +161,7 @@ def test_opening_a_link_is_not_a_subscription(make_app):
 # --- redirect -------------------------------------------------------------------------------------------------
 def test_redirect_serves_only_stored_safe_targets_and_dedups(make_app):
     app = published_app(make_app)
-    link = db(app).links()[0]
+    link = db(app).links()[-1]
     assert redirect.resolve_click(app, link["code"], "Mozilla/5.0 Safari", "1.2.3.4", "s") == "https://t.me/+inv1"
     redirect.resolve_click(app, link["code"], "Mozilla/5.0 Safari", "1.2.3.4", "s")  # same visitor same day
     redirect.resolve_click(app, link["code"], "TelegramBot (like TwitterBot)", "9.9.9.9", "s")
@@ -175,11 +176,12 @@ def test_redirect_serves_only_stored_safe_targets_and_dedups(make_app):
     assert redirect.resolve_click(app, link["code"], "Mozilla", "ip", "s") is None
 
 
-def test_redirect_href_used_when_public_base_url_is_set(make_app):
+def test_publish_block_has_no_link_even_with_public_base_url(make_app):
     app = make_app()
     app.settings.public_base_url = "https://go.example.com/"
     nodes = flat(gpub.begin(app, DAY, {"company_name": "Acme"}))
-    assert "https://go.example.com/go/" in nodes
+    assert "go.example.com" not in nodes and '"a"' not in nodes
+    assert [l["medium"] for l in db(app).links()] == ["cta"] and db(app).links()[0]["invite_link"] is None
 
 
 # --- statistics -----------------------------------------------------------------------------------------------
@@ -277,7 +279,7 @@ def test_data_survives_restart(make_app, tmp_path):
     from investor_agent.storage import Store
     again = GrowthDb(Store(app.settings.database_path))
     assert len(again.publications()) == 1 and again.snapshot_latest(0, "telegram", "subscribers")["value"] == 100
-    assert again.links()[0]["invite_link"] == "https://t.me/+inv1"
+    assert again.links()[-1]["invite_link"] == "https://t.me/+inv1"
 
 
 # --- report ---------------------------------------------------------------------------------------------------
@@ -339,7 +341,7 @@ def test_growth_is_off_by_default():
 
 def test_click_flood_is_capped_and_spoofed_ua_does_not_multiply(make_app, monkeypatch):
     app = published_app(make_app)
-    link = db(app).links()[0]
+    link = db(app).links()[-1]
     for i in range(5):
         redirect.resolve_click(app, link["code"], f"Mozilla/{i}", "1.1.1.1", "s")
     assert db(app).traffic_counts() == {("telegraph", "click"): 1}
@@ -403,7 +405,7 @@ def test_failed_send_is_retried_and_page_is_reused(make_app):
 def test_click_cap_holds_under_parallel_requests(make_app):
     from concurrent.futures import ThreadPoolExecutor
     app = published_app(make_app)
-    link = db(app).links()[0]
+    link = db(app).links()[-1]
     with ThreadPoolExecutor(8) as pool:
         list(pool.map(lambda i: db(app).add_traffic(link["id"], "click", f"k{i}", daily_cap=5), range(40)))
     assert db(app).traffic_counts()[("telegraph", "click")] == 5
@@ -517,7 +519,7 @@ def test_crash_after_page_creation_reuses_the_page(make_app):
     assert unicorn.publish(app, DAY) == "published"
     assert len(app.telegraph.pages) == 1
     assert app.store.draft_get(DAY)["page_url"] == "https://telegra.ph/test-page"
-    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Подписаться на Школу единорогов") == 1
+    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Каждый день разбираем бизнес") == 1
 
 
 def test_failed_page_lookup_never_creates_a_second_page(make_app):
