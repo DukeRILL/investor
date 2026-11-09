@@ -421,7 +421,7 @@ def hero_photo(report: dict) -> dict | None:
     return next((m for m in photos if m.get("role") == "hero"), photos[0] if photos else None)
 
 
-COVER_PATH = Path(__file__).resolve().parents[3] / "assets" / "unicorn_cover.jpg"  # 1080 px wide JPEG, ~160 KB
+COVER_PATH = Path(__file__).resolve().parents[3] / "assets" / "unicorn_cover.jpg"  # 1280 px wide banner JPEG
 
 
 CHANNEL_URL = "https://t.me/investor_duker"
