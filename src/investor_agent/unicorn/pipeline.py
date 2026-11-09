@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from pathlib import Path
 from datetime import datetime
 from html import escape
 
@@ -420,12 +421,27 @@ def hero_photo(report: dict) -> dict | None:
     return next((m for m in photos if m.get("role") == "hero"), photos[0] if photos else None)
 
 
-def build_page(report: dict, registry: SourceRegistry, date_str: str) -> tuple[str, list]:
+COVER_PATH = Path(__file__).resolve().parents[3] / "assets" / "unicorn_cover.jpg"  # 1080 px wide JPEG, ~160 KB
+
+
+def cover_url(app: App) -> str | None:
+    """Fixed cover for the top of every Unicorn School article; uploaded to the image host (same content = same URL).
+    A failure only means an article without the cover."""
+    try:
+        return _uploader(app)(COVER_PATH.read_bytes(), "image/jpeg")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cover upload failed: %s", type(exc).__name__)
+        return None
+
+
+def build_page(report: dict, registry: SourceRegistry, date_str: str, cover: str | None = None) -> tuple[str, list]:
     title = f"ШКОЛА ЕДИНОРОГОВ — {date_str}. КОМПАНИЯ ДНЯ: {report['company_name']}"
     media = report.get("media_resolved") or []
     hero = hero_photo(report)
     charts = report_charts(report)
     nodes: list = []
+    if cover:
+        nodes.append({"tag": "figure", "children": [{"tag": "img", "attrs": {"src": cover}}]})
     if report.get("subtitle"):
         nodes.append({"tag": "p", "children": [{"tag": "b", "children": [report["subtitle"]]}]})
     if report.get("facts_line"):
@@ -604,7 +620,7 @@ def publish(app: App, today: str | None = None) -> str:
     try:
         if not draft.get("page_url"):
             prune_dead_media(report, app.http)  # dead pictures/videos are dropped just before the page is built
-        url = draft.get("page_url") or create_pages(app.telegraph, *build_page(report, registry, date_str))
+        url = draft.get("page_url") or create_pages(app.telegraph, *build_page(report, registry, date_str, cover_url(app)))
         app.store.draft_mark(today, "ready", page_url=url)
         mid = _send_post(app, report, date_str, url)
     except Exception as exc:  # noqa: BLE001
@@ -620,3 +636,19 @@ def publish(app: App, today: str | None = None) -> str:
     poll.post(app, tomorrow, payload.get("poll_options") or poll.make_options(app, tomorrow))
     _grow_glossary(app, report)  # after the poll: the issue post and the poll keep their places in the channel
     return "published"
+
+
+def preview(app: App, today: str | None = None) -> str:
+    """Build the latest ready/published issue with the current page layout as a new Telegraph page and send the link
+    to the admin chat only. Nothing goes to the channel."""
+    today = today or issue_date()
+    draft = app.store.draft_get(today)
+    if not draft or not draft.get("payload"):
+        return "no_draft"
+    payload = draft["payload"]
+    report = payload["report"]
+    date_str = ru_date(datetime.fromisoformat(today))
+    title, nodes = build_page(report, _registry_from(payload["sources"]), date_str, cover_url(app))
+    url = create_pages(app.telegraph, title, nodes)
+    app.notify_admin(f"Драфт Школы единорогов ({today}) с новой шапкой: {url}")
+    return url

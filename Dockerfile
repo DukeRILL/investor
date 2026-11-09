@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src ./src
 COPY prompts ./prompts
 COPY config ./config
+COPY assets ./assets
 
 RUN useradd --create-home --uid 1000 agent && mkdir -p /app/data && chown agent:agent /app/data
 USER agent

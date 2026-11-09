@@ -24,7 +24,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # httpx INFO logs full URLs, incl. api_key=
     parser = argparse.ArgumentParser(prog="investor_agent")
-    parser.add_argument("command", choices=["prepare", "publish", "poll", "poll-close", "radar", "digest", "glossary", "status",
+    parser.add_argument("command", choices=["prepare", "publish", "preview", "poll", "poll-close", "radar", "digest", "glossary", "status",
                                                 "riddle", "riddle-publish", "riddle-brief"])
     parser.add_argument("--company", help="riddle: investigate this company instead of letting the agent choose")
     parser.add_argument("--date", help="issue date YYYY-MM-DD (Beijing) for prepare/publish")
@@ -34,6 +34,8 @@ def main() -> None:
         print(unicorn.prepare(app, args.date))
     elif args.command == "publish":
         print(unicorn.publish(app, args.date))
+    elif args.command == "preview":
+        print(unicorn.preview(app, args.date))
     elif args.command == "poll":
         issue = args.date or poll.next_issue(unicorn.issue_date())
         options = poll.make_options(app, issue, app.store.recent_archive(14, issue))

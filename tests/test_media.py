@@ -363,3 +363,12 @@ def test_short_report_is_topped_up_by_sections_not_regenerated():
     errors = unicorn._expand_short(app, report, reg, {"company": {"name": "X"}})
     assert not any("need at least 15" in e for e in errors)
     assert 1 <= len(calls) <= unicorn.EXPAND_ROUNDS
+
+
+def test_cover_goes_first_and_file_is_light():
+    reg = SourceRegistry()
+    _, nodes = unicorn.build_page(_report_with_media(reg), reg, "9 ноября 2026", "https://img/cover.jpg")
+    assert nodes[0]["tag"] == "figure" and nodes[0]["children"][0]["attrs"]["src"] == "https://img/cover.jpg"
+    _, plain = unicorn.build_page(_report_with_media(reg), reg, "9 ноября 2026")
+    assert plain[0]["tag"] == "p"  # no cover: layout as before
+    assert 0 < unicorn.COVER_PATH.stat().st_size < 250_000
