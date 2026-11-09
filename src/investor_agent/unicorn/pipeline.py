@@ -427,25 +427,24 @@ COVER_PATH = Path(__file__).resolve().parents[3] / "assets" / "unicorn_cover.jpg
 CHANNEL_URL = "https://t.me/investor_duker"
 
 
-LOGO_PATH = COVER_PATH.with_name("tg_logo.png")  # 96 px Telegram logo, ~6 KB
+LOGO_PATH = COVER_PATH.with_name("tg_button.png")  # 1080x220 button picture: TG logo + channel name
 
 
 def _channel_button(logo: str | None = None) -> list:
-    """Telegraph has no buttons: the logo (own line, Telegraph shows images as blocks) and a bold link."""
-    link = {"tag": "p", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
-        {"tag": "strong", "children": ["Перейти на канал"]}, " — ",
-        {"tag": "strong", "children": ["🦄ШКОЛА ЕДИНОРОГОВ. Ежедневные разборы взлетающих бизнесов"]}]}]}
-    if not logo:
-        return [link]
-    return [{"tag": "figure", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
-        {"tag": "img", "attrs": {"src": logo}}]}]}, link]
+    """Telegraph has no buttons and stretches pictures to the full width, so the button is a ready-made wide
+    picture that links to the channel; without the picture - a plain bold link."""
+    if logo:
+        return [{"tag": "figure", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
+            {"tag": "img", "attrs": {"src": logo}}]}]}]
+    return [{"tag": "p", "children": [{"tag": "a", "attrs": {"href": CHANNEL_URL}, "children": [
+        {"tag": "strong", "children": ["Перейти на канал — 🦄ШКОЛА ЕДИНОРОГОВ. Ежедневные разборы взлетающих бизнесов"]}]}]}]
 
 
 def logo_url(app: App) -> str | None:
     try:
         return _uploader(app)(LOGO_PATH.read_bytes(), "image/png")
     except Exception as exc:  # noqa: BLE001
-        log.warning("logo upload failed: %s", type(exc).__name__)
+        log.warning("button image upload failed: %s", type(exc).__name__)
         return None
 
 
