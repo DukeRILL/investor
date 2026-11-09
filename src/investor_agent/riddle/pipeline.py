@@ -399,7 +399,7 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, channel: s
     if not subscribe:  # growth off: the old one-line invitation before the banner
         nodes.append({"tag": "p", "children": ["Новые расследования каждый день — подписывайтесь на ",
                                                {"tag": "a", "attrs": {"href": channel}, "children": ["«Школу единорогов»"]}, "."]})
-    nodes.extend(_channel_button(button, channel))  # the same button as at the end of Unicorn School articles
+    nodes.extend(_channel_button(button, channel, text_link=not subscribe))  # the same button as at the end of Unicorn School articles
     nodes.extend(subscribe or [])  # banner (personal link), the channel line, then the subscribe text
     return title, nodes
 

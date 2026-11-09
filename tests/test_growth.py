@@ -46,20 +46,21 @@ def test_hook_comes_from_the_article_and_differs_between_articles():
 def test_subscribe_block_has_approved_text_and_only_supported_tags():
     nodes = share.subscribe_nodes("https://t.me/+abc")
     text = "\n".join(share._text(n) for n in nodes)
-    assert "Эту статью прислали вам?" in text and "Каждый день — новый разбор реального бизнеса" in text
-    assert "👉 Подписаться на „🦄 ШКОЛА ЕДИНОРОГОВ“" in text
-    link = nodes[1]["children"][0]["children"][0]  # bold line -> the personal link on the whole call to action
-    assert link == {"tag": "a", "attrs": {"href": "https://t.me/+abc"}, "children": ["👉 Подписаться на „🦄 ШКОЛА ЕДИНОРОГОВ“"]}
-    assert {n["tag"] for n in nodes} == {"p"}  # no horizontal rule
+    assert text.startswith("Завтра — новая история большого бизнеса\n")
+    assert "Каждый день в 10:00 разбираем реальные компании: с чего начинали, как находили точки роста, на чём зарабатывали и какие решения привели к успеху." in text
+    assert "→ Подписаться на «ШКОЛУ ЕДИНОРОГОВ»" in text
+    link = nodes[2]["children"][0]["children"][0]  # the bold line is the link, all of it
+    assert link == {"tag": "a", "attrs": {"href": "https://t.me/+abc"}, "children": ["→ Подписаться на «ШКОЛУ ЕДИНОРОГОВ»"]}
+    assert {n["tag"] for n in nodes} == {"h4", "p"}  # no horizontal rule, no buttons
 
 
 # --- publication integration ----------------------------------------------------------------------------------
 def test_publish_adds_cta_share_buttons_and_records_everything(make_app):
     app = published_app(make_app)
     page_nodes = flat(app.telegraph.by_url["https://telegra.ph/test-page"][1])
-    assert "https://t.me/+inv1" in page_nodes and "ШКОЛА ЕДИНОРОГОВ" in page_nodes
+    assert "https://t.me/+inv1" in page_nodes and "ШКОЛУ ЕДИНОРОГОВ" in page_nodes
     assert "Подписаться на Школу единорогов" not in page_nodes
-    assert "Поделиться разбором" in page_nodes and "t.me/share/url" in page_nodes and "wa.me" in page_nodes
+    assert "Хорошими идеями стоит делиться" in page_nodes and "t.me/share/url" in page_nodes and "wa.me" in page_nodes
     gdb = db(app)
     pub = gdb.publication_by_date(DAY)
     assert pub["article_url"] == "https://telegra.ph/test-page" and pub["telegram_message_id"] == 1 and pub["share_done"]
@@ -83,13 +84,13 @@ def test_banner_and_phrase_share_one_personal_invite_link(make_app):
     for n in nodes:
         walk(n)
     assert [h for h, _ in hrefs] == ["https://t.me/+inv1", "https://t.me/+inv1"]  # banner image link, phrase link
-    assert "img" in hrefs[0][1] and "ШКОЛА ЕДИНОРОГОВ" in hrefs[1][1]
+    assert "img" in hrefs[0][1] and "ШКОЛУ ЕДИНОРОГОВ" in hrefs[1][1]
     assert app.telegram.invites == ["telegraph-cta-2026-11-09"]  # one invite link serves both
     texts = [share._text(n) for n in nodes]
     fig = max(i for i, n in enumerate(nodes) if n.get("tag") == "figure")
-    i_share = next(i for i, t in enumerate(texts) if t.startswith("Было полезно?"))
-    i_sub = next(i for i, t in enumerate(texts) if t.startswith("Эту статью прислали вам?"))
-    assert fig < i_share < i_sub and not any(n.get("tag") == "hr" for n in nodes[fig:])  # banner, share, subscribe
+    i_sub = next(i for i, t in enumerate(texts) if t.startswith("Завтра — новая история большого бизнеса"))
+    i_share = next(i for i, t in enumerate(texts) if t.startswith("Хорошими идеями стоит делиться"))
+    assert fig < i_sub < i_share and not any(n.get("tag") == "hr" for n in nodes[fig:])  # banner, subscribe, share
 
 
 def test_republish_and_retry_do_not_duplicate_the_block(make_app):
@@ -98,7 +99,7 @@ def test_republish_and_retry_do_not_duplicate_the_block(make_app):
     pub = db(app).publication_by_date(DAY)
     assert gpub.ensure_share_block(app, pub) is True
     assert gpub.ensure_share_block(app, pub) is True
-    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Поделиться разбором") == 1
+    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Хорошими идеями стоит делиться") == 1
     assert len(app.telegraph.edited) == 1 and len(app.telegram.invites) == 1
 
 
@@ -130,7 +131,7 @@ def test_chain_of_parts_gets_share_block_on_last_part_only(make_app):
     pub_id = db(app).publication_upsert(DAY, "Acme", article_url=first)
     gpub.ensure_share_block(app, db(app).publication(pub_id))
     assert "Поделиться" not in flat(app.telegraph.by_url[first][1])
-    assert "Поделиться разбором" in flat(app.telegraph.by_url[last][1])
+    assert "Хорошими идеями стоит делиться" in flat(app.telegraph.by_url[last][1])
 
 
 # --- invite attribution / chat_member -------------------------------------------------------------------------
@@ -541,7 +542,7 @@ def test_crash_after_page_creation_reuses_the_page(make_app):
     assert unicorn.publish(app, DAY) == "published"
     assert len(app.telegraph.pages) == 1
     assert app.store.draft_get(DAY)["page_url"] == "https://telegra.ph/test-page"
-    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Эту статью прислали вам?") == 1
+    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Завтра — новая история большого бизнеса") == 1
 
 
 def test_failed_page_lookup_never_creates_a_second_page(make_app):
@@ -1035,12 +1036,11 @@ def test_riddle_footer_has_personal_link_subscribe_text_share_and_friend_button(
     nodes = app.telegraph.by_url["https://telegra.ph/test-page"][1]
     text = flat(nodes)
     mine = [a for a in anchors(nodes) if a[0] == "https://t.me/+inv1"]
-    assert len(mine) == 3 and "img" in mine[0][1] and "Перейти на канал: t.me/investor_duker" in mine[1][1]
-    assert "ШКОЛА ЕДИНОРОГОВ" in mine[2][1]  # banner, the kept channel line (shows the public name), phrase: one link
+    assert len(mine) == 2 and "img" in mine[0][1] and "ШКОЛУ ЕДИНОРОГОВ" in mine[1][1]  # banner + subscribe link: one link
     assert app.telegram.invites == ["telegraph-cta-riddle-2026-11-09"]
-    assert "Эту статью прислали вам?" in text and "👉 Подписаться на „🦄 ШКОЛА ЕДИНОРОГОВ“" in text
-    assert "Новые расследования каждый день" not in text and "Перейти на канал" in text  # the old line is replaced
-    assert "Поделиться разбором" in text and "t.me/share/url" in text and "vk.com/share.php" in text and "wa.me" in text
+    assert "Завтра — новая история большого бизнеса" in text and "→ Подписаться на «ШКОЛУ ЕДИНОРОГОВ»" in text
+    assert "Новые расследования каждый день" not in text and "Перейти на канал" not in text  # old lines are gone
+    assert "Хорошими идеями стоит делиться" in text and "t.me/share/url" in text and "vk.com/share.php" in text and "wa.me" in text
     tg = [h for h, _ in anchors(nodes) if h.startswith("https://t.me/share/url")][0]
     shared = unquote(tg)
     assert "text=Как скучная накладная стала бизнесом на миллиард: " in shared  # the headline leads, not the company name
@@ -1057,10 +1057,10 @@ def test_riddle_draft_mode_creates_no_invite_links_and_posts_to_admin(make_app):
     nodes = app.telegraph.by_url["https://telegra.ph/test-page"][1]
     assert not getattr(app.telegram, "invites", [])
     assert any(h == "https://t.me/investor_duker" and "img" in t for h, t in anchors(nodes))  # banner: public link
-    assert "Поделиться разбором" in flat(nodes)
+    assert "Хорошими идеями стоит делиться" in flat(nodes)
     assert app.telegram.sent[0]["chat"] == "111" and 1 in app.telegram.buttons
     assert riddle.publish(app, DAY) == "already_published"
-    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Поделиться разбором") == 1
+    assert flat(app.telegraph.by_url["https://telegra.ph/test-page"][1]).count("Хорошими идеями стоит делиться") == 1
 
 
 def test_riddle_and_unicorn_of_the_same_day_are_separate_publications(make_app):
@@ -1078,5 +1078,34 @@ def test_growth_off_keeps_the_old_riddle_footer(make_app):
     riddle.prepare(app, DAY)
     assert riddle.publish(app, DAY) == "published"
     text = flat(app.telegraph.pages[0][1])
-    assert "Новые расследования каждый день" in text and "Поделиться разбором" not in text
+    assert "Новые расследования каждый день" in text and "Хорошими идеями стоит делиться" not in text
     assert not getattr(app.telegram, "buttons", {})
+
+
+# --- footer v3 (Илья's text), the checks the owner asked for ---------------------------------------------------
+def test_footer_with_a_real_article_url_and_three_share_links_of_that_article(make_app):
+    app = published_app(make_app)
+    page = app.telegraph.by_url["https://telegra.ph/test-page"][1]
+    created = app.telegraph.pages[0][1]  # what createPage got: everything above the share part
+    texts = [share._text(n) for n in page]
+    assert [n for n in page if n.get("tag") == "h4"][-2:] == [{"tag": "h4", "children": ["Завтра — новая история большого бизнеса"]},
+                                                              {"tag": "h4", "children": ["Хорошими идеями стоит делиться"]}]
+    links = {share._text(a): a["attrs"]["href"] for a in page[-1]["children"] if isinstance(a, dict) and a.get("tag") == "a"}
+    assert set(links) == {"Telegram", "VK", "WhatsApp"} and texts[-1].startswith("Поделиться статьёй:")
+    for name, href in links.items():  # every link carries THIS article (never the channel), encoded
+        assert "telegra.ph%2Ftest-page" in href and "investor_duker" not in href, name
+    assert links["Telegram"].startswith("https://t.me/share/url?url=") and "&text=" in links["Telegram"]
+    assert links["VK"].startswith("https://vk.com/share.php?url=") and links["WhatsApp"].startswith("https://wa.me/?text=")
+    assert "%D0%" in links["Telegram"] and " " not in "".join(links.values())  # Cyrillic is percent-encoded
+    # the banner and everything that was created stays: the footer only appended the share part
+    assert page[:len(created)] == created and len(page) == len(created) + 3
+    assert any(n.get("tag") == "figure" for n in created[-4:])  # the banner is still right above the subscribe text
+
+
+def test_old_footer_texts_are_gone(make_app):
+    app = published_app(make_app)
+    text = flat(app.telegraph.by_url["https://telegra.ph/test-page"][1])
+    for old in ("Перейти на канал", "Было полезно", "Эту статью прислали", "Поделиться разбором", "Подписаться на Школу",
+                "Каждый день разбираем бизнес", "Подписывайтесь на"):
+        assert old not in text, old
+    assert '"hr"' not in text[-1500:]
