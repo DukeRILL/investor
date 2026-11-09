@@ -1,7 +1,6 @@
 """Pictures for «Разгадка бизнеса» that do not come from the company's own pages.
 
-- Schemes drawn by code from the verified data the model returned (mechanism chain, timeline, CIS analogue cards,
-  verdict card). Pillow + DejaVu, the same way chart.py draws charts. Nothing is invented here: only text from the issue.
+- Schemes drawn by code from the verified data the model returned (mechanism chain, timeline). Pillow + DejaVu, the same way chart.py draws charts. Nothing is invented here: only text from the issue.
 - Pixabay stock photos (PIXABAY_API_KEY), downloaded and re-hosted (Pixabay forbids hot-linking).
 - Cloudflare Workers AI FLUX illustrations (CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN), last resort, marked as AI.
 Every function returns None instead of raising: a missing picture only makes the issue plainer (and maybe BLOCKED).
@@ -100,78 +99,6 @@ def render_timeline(events: list[dict], title: str = "Хронология") -> 
         for k, line in enumerate(_wrap(e["text"], 66, 2)):
             d.text((x + 50, y + 4 + k * 36), line, font=fonts["body"], fill=INK if k == 0 else INK2)
     return _png(img)
-
-
-def render_cards(title: str, cards: list[dict]) -> bytes | None:
-    """Cards: {'title': ..., 'tag': ..., 'lines': [...]}, two per row."""
-    cards = [c for c in cards or [] if isinstance(c, dict) and c.get("title")][:6]
-    fonts = _fonts()
-    if not cards or not fonts:
-        return None
-    card_w, card_h, gap, top = (W - 140 - 40) // 2, 330, 40, 150
-    rows = -(-len(cards) // 2)
-    img, d = _canvas(top + rows * (card_h + gap) + 10, title, fonts)
-    for i, c in enumerate(cards):
-        x = 70 + (i % 2) * (card_w + gap)
-        y = top + (i // 2) * (card_h + gap)
-        d.rounded_rectangle([x, y, x + card_w, y + card_h], radius=22, fill="#ffffff", outline=LINE, width=3)
-        d.text((x + 30, y + 26), str(c["title"])[:34], font=fonts["head"], fill=INK)
-        if c.get("tag"):
-            d.text((x + 30, y + 70), str(c["tag"])[:48], font=fonts["small"], fill=ACCENT)
-        yy = y + 110
-        for line in c.get("lines") or []:
-            for part in _wrap(line, 46, 2):
-                if yy > y + card_h - 40:
-                    break
-                d.text((x + 30, yy), part, font=fonts["small"], fill=INK2)
-                yy += 32
-            yy += 6
-    return _png(img)
-
-
-def render_verdict(cis: dict) -> bytes | None:
-    verdict = str(cis.get("verdict") or "").strip()
-    fonts = _fonts()
-    if not verdict or not fonts:
-        return None
-    lines = [("Главные аргументы", cis.get("arguments") or []), ("Главный риск", [cis.get("main_risk") or ""]),
-             ("Модель адаптации", [cis.get("adaptation") or ""])]
-    img, d = _canvas(960, "Можно ли повторить в СНГ: вердикт", fonts)
-    d.rounded_rectangle([70, 140, W - 70, 250], radius=22, fill=ACCENT_BG, outline=ACCENT, width=3)
-    d.text((110, 195), verdict, font=fonts["title"], fill=ACCENT, anchor="lm")
-    if cis.get("confidence"):
-        d.text((W - 110, 195), f"уверенность: {cis['confidence']}", font=fonts["body"], fill=INK2, anchor="rm")
-    y = 290
-    for head, items in lines:
-        d.text((70, y), head, font=fonts["head"], fill=INK)
-        y += 46
-        for item in [i for i in items if i][:3]:
-            for k, part in enumerate(_wrap(item, 92, 2)):
-                d.text((100, y), ("• " if k == 0 else "  ") + part, font=fonts["body"], fill=INK2)
-                y += 36
-        y += 22
-        if y > 900:
-            break
-    return _png(img.crop((0, 0, W, min(960, y + 20))))
-
-
-def analog_cards(cis: dict) -> list[dict]:
-    out = []
-    kinds = {"direct": "прямой конкурент", "functional": "функциональная альтернатива", "partial": "частично похожая модель"}
-    for a in (cis or {}).get("analogs") or []:
-        if not isinstance(a, dict) or not a.get("name"):
-            continue
-        tag = " · ".join(x for x in (a.get("country"), kinds.get(str(a.get("kind")), "")) if x)
-        out.append({"title": a["name"], "tag": tag,
-                    "lines": [f"Что: {a.get('product', '')}", f"Сходство: {a.get('similarity', '')}",
-                              f"Отличие: {a.get('difference', '')}"]})
-    return out
-
-
-def mvp_cards(cis: dict) -> list[dict]:
-    heads = ["Аудитория", "Минимальный продукт", "Где клиенты", "Проверка оплаты", "Метрики успеха", "Когда отказаться"]
-    steps = [str(x) for x in (cis or {}).get("mvp") or [] if x][:6]
-    return [{"title": f"{i + 1}. {heads[i] if i < len(heads) else 'Шаг'}", "lines": [s]} for i, s in enumerate(steps)]
 
 
 # --- external images -------------------------------------------------------------------------

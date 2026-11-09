@@ -20,7 +20,7 @@ from ..quality import is_russian, strip_meta_notes
 from ..sources import CITE_RE, SourceRegistry
 from ..storage import norm_name
 from ..telegram import TelegramError
-from ..textfmt import reading_line, text_to_nodes, visible_len
+from ..textfmt import reading_line, reading_minutes, text_to_nodes, visible_len
 from ..timeutil import PeakHoursError, now_bj, ru_date
 from ..unicorn.pipeline import _channel_button, _figure, logo_url, _interleave, _registry_from, _uploader, create_pages
 from ..unicorn.precheck import image_alive, video_alive
@@ -29,16 +29,23 @@ from . import visuals
 log = logging.getLogger(__name__)
 
 RUBRIC = "Разгадка бизнеса"
-ACTS = ["riddle", "before", "first_steps", "turn", "solution", "evidence", "flip_side", "cis"]
-VERDICTS = ("ЗАПУСКАТЬ", "ТЕСТИРОВАТЬ", "НЕ ЗАПУСКАТЬ В ТЕКУЩЕМ ВИДЕ")
-VIDEO_PLACE = {"founders": "before", "product": "turn", "market": "evidence"}
-MIN_IMAGES = 12      # owner's master prompt §9: at least 12 different images inside the published article
+# Owner's master prompt «редакционная стратегия» of 2026-11-09 (prompts/business_riddle.md, docs/RULES.md §5).
+ACTS = ["riddle", "before", "first_steps", "turn", "solution", "evidence", "flip_side", "cis", "discovery"]
+VERDICTS = ("ПОВТОРИТЬ РЕАЛИСТИЧНО", "ТРЕБУЕТ ПРОВЕРКИ", "КОПИРОВАТЬ НЕЦЕЛЕСООБРАЗНО")
+VIDEO_PLACE = {"founders": "before", "product": "turn", "market": "solution"}
+MIN_IMAGES = 12      # §12: at least 12 different images inside the published article
 MAX_IMAGES = 16
-MIN_VIDEOS = 3       # §10: at least 3 different working YouTube videos inside the article
-MIN_WORDS = 1300     # target 1,400–2,200 words (§13); a little slack before the issue is sent back
-MIN_SECTION_WORDS = 80
-MIN_SOURCES = 6
-TEASER_MIN, TEASER_MAX = 450, 850   # §15: about 500–800 characters
+MIN_VIDEOS = 3       # §13: at least 3 different working YouTube videos inside the article
+MIN_WORDS, MAX_WORDS = 900, 1700   # §15: 1,000–1,400 words, up to 1,600; a little slack both ways
+MAX_READ_MINUTES = 20              # owner's rule: the whole page reads in no more than 20 minutes
+MIN_SECTION_WORDS = 40
+CIS_WORDS = (70, 230)              # §11: the CIS block is about 100–180 words
+MAX_ANALOGS = 3
+MIN_SOURCES = 5
+MAX_PUBLIC_SOURCES = 8             # §19: 5–8 key sources in the public list
+MIN_QUALITY = 8.0                  # §20: weighted editorial score; below it, or with repeats, the issue is sent back
+QUALITY_WEIGHTS = {"interest": 0.30, "substance": 0.25, "clarity": 0.20, "no_repeats": 0.15, "shareability": 0.10}
+TEASER_MIN, TEASER_MAX = 350, 700  # §17: about 400–650 characters
 CAPTION_LIMIT = 1000
 SEARCH_CACHE_HOURS = 24
 ARCHIVE_KEY = "riddle_archive"
@@ -114,7 +121,20 @@ def validate_story(report: dict, registry: SourceRegistry, excluded: set[str] = 
         errors.append(f"{name} is in `excluded` (already covered): choose another company")
     concept = report.get("concept") or {}
     if not concept.get("riddle") or len([h for h in concept.get("headlines") or [] if h]) < 3:
-        errors.append("concept: give the riddle and three headlines")
+        errors.append("concept: give the riddle and three headlines (парадокс, скрытый механизм, неожиданное решение)")
+    angles = [a for a in (report.get("editorial_notes") or {}).get("angles") or [] if isinstance(a, dict) and a.get("scores")]
+    if len(angles) < 3:
+        errors.append("editorial_notes.angles: form three different angles and score each (surprise, story, evidence, viral)")
+    score = quality_score(report)
+    if score is None:
+        errors.append("quality: run the editorial audit and give the five scores")
+    elif score < MIN_QUALITY:
+        errors.append(f"editorial audit total is {score}, below {MIN_QUALITY}: revise the weakest parts")
+    if (report.get("quality") or {}).get("repeats_found"):
+        errors.append("the editorial audit found repeated meaning: keep the strongest explanation of each thesis, "
+                      "delete the duplicates")
+    if not str(report.get("discussion_question", "")).strip():
+        errors.append("discussion_question is empty")
     if not str(report.get("headline", "")).strip():
         errors.append("headline is empty")
     if not str(report.get("category", "")).strip() or not str(report.get("business_type", "")).strip():
@@ -126,12 +146,20 @@ def validate_story(report: dict, registry: SourceRegistry, excluded: set[str] = 
     text = "\n".join(s.get("body", "") for s in acts.values())
     words = _words(text)
     if words < MIN_WORDS:
-        errors.append(f"the story has {words} words, need 1,400–2,200: add facts, events and explanations, not filler")
+        errors.append(f"the story has {words} words, need 1,000–1,400: add facts, events and explanations, not filler")
+    elif words > MAX_WORDS:
+        errors.append(f"the story has {words} words, need 1,000–1,400 (at most 1,600): cut repeats and secondary details")
+    minutes = reading_minutes(article_text(report))
+    if minutes > MAX_READ_MINUTES:
+        errors.append(f"the page reads for {minutes} minutes, the limit is {MAX_READ_MINUTES}: cut the text")
+    cis_words = _words((acts.get("cis") or {}).get("body", ""))
+    if acts.get("cis") and not (CIS_WORDS[0] <= cis_words <= CIS_WORDS[1]):
+        errors.append(f"the cis section has {cis_words} words, need 100–180")
     if text and not is_russian(text):
         errors.append("text must be in Russian")
     teaser = report.get("teaser", "")
     if not (TEASER_MIN <= len(teaser) <= TEASER_MAX):
-        errors.append(f"teaser has {len(teaser)} characters, need 500–800")
+        errors.append(f"teaser has {len(teaser)} characters, need 400–650")
     elif not is_russian(teaser):
         errors.append("teaser must be in Russian")
     if any(v in teaser.upper() for v in VERDICTS):
@@ -143,22 +171,27 @@ def validate_story(report: dict, registry: SourceRegistry, excluded: set[str] = 
     unsourced = [a["name"] for a in analogs if not registry.get(str(a.get("source", "")))]
     if unsourced:
         errors.append(f"cis.analogs without a source id of a page you found: {', '.join(unsourced)}")
-    if len(analogs) < 3 and not str(cis.get("no_direct_note", "")).strip():
-        errors.append("cis.analogs: find 3–5 real analogues in Russia/CIS, or explain in no_direct_note and show the "
-                      "closest confirmed alternatives")
+    if not analogs and not str(cis.get("no_direct_note", "")).strip():
+        errors.append("cis.analogs: up to 3 real analogues in Russia/CIS, or say in no_direct_note that there are none")
+    if len(analogs) > MAX_ANALOGS:
+        errors.append(f"cis.analogs: at most {MAX_ANALOGS} closest analogues")
     if str(cis.get("verdict", "")).strip().upper() not in VERDICTS:
         errors.append("cis.verdict must be exactly one of: " + ", ".join(VERDICTS))
-    if len([x for x in cis.get("arguments") or [] if x]) < 2 or not cis.get("main_risk") or not cis.get("confidence") \
-            or not cis.get("would_change") or not cis.get("adaptation"):
-        errors.append("cis: give 2–3 arguments, main_risk, confidence, would_change and one adaptation model")
-    if len([x for x in cis.get("mvp") or [] if x]) < 6:
-        errors.append("cis.mvp: give all 6 steps of the test")
     verified = registry.verified(registry.cited_ids(text))
     if len(verified) < MIN_SOURCES:
         errors.append(f"only {len(verified)} cited sources were opened with fetch_page; need at least {MIN_SOURCES}")
     if len([v for v in report.get("videos") or [] if isinstance(v, dict)]) < MIN_VIDEOS:
         errors.append("videos: nominate at least 3 (better 4–5) real YouTube videos found with web_search")
     return errors
+
+
+def quality_score(report: dict) -> float | None:
+    """§20: 0.30·interest + 0.25·substance + 0.20·clarity + 0.15·no_repeats + 0.10·shareability (internal)."""
+    q = report.get("quality") or {}
+    try:
+        return round(sum(float(q[k]) * w for k, w in QUALITY_WEIGHTS.items()), 2)
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 # --- media ------------------------------------------------------------------------------------
@@ -213,12 +246,7 @@ def build_media(app: App, report: dict, registry: SourceRegistry) -> None:
         "Разгадка в одной схеме: от потребности клиента до преимущества", "механизм успеха")
     own(visuals.render_timeline(report.get("timeline") or []), "хронология", "first_steps",
         "Ключевые события компании", "развитие компании")
-    cis = report.get("cis") or {}
-    own(visuals.render_cards("Аналоги в России и СНГ", visuals.analog_cards(cis)), "схема", "cis",
-        "Ближайшие аналоги и конкуренты в СНГ", "аналоги в СНГ")
-    own(visuals.render_cards("Как проверить идею: 6 шагов", visuals.mvp_cards(cis)), "схема", "cis",
-        "Минимальный тест похожего бизнеса в СНГ", "проверка гипотезы")
-    own(visuals.render_verdict(cis), "схема", "cis", "Вердикт: можно ли повторить в СНГ", "итог оценки")
+    # no picture for the CIS block: its compact text list would repeat it (§9, ban on repeated meaning)
 
     # 3. stock photos, 4. AI illustrations — only while the article is short of 12 pictures
     used: set[str] = set()
@@ -294,35 +322,35 @@ def manifests(report: dict) -> dict:
 # --- page and post ----------------------------------------------------------------------------
 
 def _cis_nodes(cis: dict, registry: SourceRegistry) -> list:
+    """Compact CIS block (§11): up to three analogues with links, the verdict and an optional hypothesis."""
     nodes: list = []
-    analogs = [a for a in cis.get("analogs") or [] if isinstance(a, dict) and a.get("name")]
-    if analogs:
-        nodes.append({"tag": "h4", "children": ["Сравнение: компания / страна / что предлагает / чем похожа / в чём отличие"]})
-        items = []
-        for a in analogs:
-            src = registry.get(str(a.get("source", "")))
-            name = {"tag": "a", "attrs": {"href": src.url}, "children": [a["name"]]} if src else a["name"]
-            tail = "; ".join(x for x in (a.get("country"), a.get("product"), f"похожа: {a.get('similarity', '')}",
-                                         f"отличие: {a.get('difference', '')}",
-                                         f"масштаб: {a['scale']}" if a.get("scale") else "") if x)
-            items.append({"tag": "li", "children": [{"tag": "b", "children": [name]}, " — " + tail]})
+    items = []
+    for a in [a for a in cis.get("analogs") or [] if isinstance(a, dict) and a.get("name")][:MAX_ANALOGS]:
+        src = registry.get(str(a.get("source", "")))
+        name = {"tag": "a", "attrs": {"href": src.url}, "children": [a["name"]]} if src else a["name"]
+        tail = "; ".join(x for x in (a.get("country"), a.get("essence") or a.get("product"),
+                                     f"сходство: {a['similarity']}" if a.get("similarity") else "",
+                                     f"отличие: {a['difference']}" if a.get("difference") else "") if x)
+        items.append({"tag": "li", "children": [{"tag": "b", "children": [name]}, " — " + tail]})
+    if items:
         nodes.append({"tag": "ul", "children": items})
-    if cis.get("no_direct_note"):
+    elif cis.get("no_direct_note"):
         nodes.append({"tag": "p", "children": [{"tag": "i", "children": [cis["no_direct_note"]]}]})
-    nodes.append({"tag": "h4", "children": ["Как проверить идею"]})
-    nodes.append({"tag": "ol", "children": [{"tag": "li", "children": [str(x)]} for x in cis.get("mvp") or [] if x]})
-    if cis.get("experiment_30d"):
-        nodes.append({"tag": "p", "children": [{"tag": "b", "children": ["Эксперимент на 30 дней. "]},
-                                               str(cis["experiment_30d"])]})
-    nodes.append({"tag": "h4", "children": [f"Вердикт: {cis.get('verdict', '')}"]})
-    nodes.append({"tag": "ul", "children": [{"tag": "li", "children": [str(x)]} for x in cis.get("arguments") or [] if x]})
-    for label, key in (("Главный риск", "main_risk"), ("Уверенность", "confidence"),
-                       ("Что может изменить вывод", "would_change"), ("Модель адаптации", "adaptation")):
-        if cis.get(key):
-            nodes.append({"tag": "p", "children": [{"tag": "b", "children": [f"{label}: "]}, str(cis[key])]})
-    nodes.append({"tag": "p", "children": [{"tag": "i", "children": [
-        "Это исследовательская оценка, а не гарантия коммерческого результата и не инвестиционная рекомендация."]}]})
+    line: list = [{"tag": "b", "children": [f"Вывод: {cis.get('verdict', '')}."]}]
+    if str(cis.get("hypothesis") or "").strip():
+        line += [" Гипотеза: ", str(cis["hypothesis"]).strip()]
+    nodes.append({"tag": "p", "children": line})
     return nodes
+
+
+def public_sources(report: dict, registry: SourceRegistry) -> list:
+    """§19: the 5–8 key sources — the ones the story cites most; the full list stays in the research notes."""
+    text = "\n".join(s.get("body", "") for s in report.get("sections") or [] if isinstance(s, dict))
+    counts: dict[str, int] = {}
+    for sid in CITE_RE.findall(text):
+        counts[sid] = counts.get(sid, 0) + 1
+    ranked = sorted((sid for sid in counts if registry.get(sid)), key=lambda sid: (-counts[sid], int(sid[1:])))
+    return sorted((registry.get(sid) for sid in ranked[:MAX_PUBLIC_SOURCES]), key=lambda s: int(s.id[1:]))
 
 
 def channel_url(app: App) -> str:
@@ -343,8 +371,6 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, channel: s
         videos.setdefault(v.get("act") or "evidence", []).append(_figure({**v, "kind": "video"}))
     nodes: list = [{"tag": "figure", "children": [{"tag": "img", "attrs": {"src": header}}]}] if header else []
     nodes.append({"tag": "p", "children": [{"tag": "i", "children": [f"«{RUBRIC}» · Школа единорогов · {date_str}"]}]})
-    if (report.get("concept") or {}).get("riddle"):
-        nodes.append({"tag": "p", "children": [{"tag": "b", "children": [report["concept"]["riddle"]]}]})
     if top:
         nodes.append(_figure(top))
     acts = sections_by_act(report)
@@ -360,15 +386,11 @@ def build_page(report: dict, registry: SourceRegistry, date_str: str, channel: s
             nodes.append(v)
     for rest in list(by_act.values()) + list(videos.values()):  # pictures of unknown acts still make the page
         nodes.extend(rest)
-    unconfirmed = [str(x) for x in (report.get("fact_check") or {}).get("unconfirmed") or [] if x]
-    if unconfirmed:
-        nodes.append({"tag": "h3", "children": ["Что не удалось подтвердить"]})
-        nodes.append({"tag": "ul", "children": [{"tag": "li", "children": [u]} for u in unconfirmed]})
-    nodes.append({"tag": "h3", "children": ["Источники"]})
+    nodes.append({"tag": "h3", "children": ["Главные источники"]})
     nodes.append({"tag": "ul", "children": [
         {"tag": "li", "children": [f"[{s.id[1:]}] ", {"tag": "a", "attrs": {"href": s.url}, "children": [s.title or s.url]},
                                    f" — {s.publisher}" + (f", {s.date[:10]}" if s.date else "")]}
-        for s in registry.sources.values()]})
+        for s in public_sources(report, registry)]})
     nodes.append({"tag": "p", "children": ["Новые расследования каждый день — подписывайтесь на ",
                                            {"tag": "a", "attrs": {"href": channel}, "children": ["«Школу единорогов»"]}, "."]})
     nodes.extend(_channel_button(button, channel))  # the same button as at the end of Unicorn School articles
@@ -394,11 +416,13 @@ def count_page_media(nodes: list, ignore: set[str] = frozenset()) -> tuple[int, 
 
 
 def article_text(report: dict) -> str:
+    """Everything the reader gets on the page, for the reading time (and the 20-minute ceiling)."""
     parts = [s.get("body", "") for s in report.get("sections") or [] if isinstance(s, dict)]
     cis = report.get("cis") or {}
-    parts += [str(x) for x in (cis.get("mvp") or []) + (cis.get("arguments") or [])]
-    parts += [str(cis.get(k, "")) for k in ("main_risk", "would_change", "adaptation", "experiment_30d")]
-    parts += [m.get("caption", "") for m in report.get("images") or []]
+    parts += [" ".join(str(a.get(k, "")) for k in ("name", "essence", "similarity", "difference"))
+              for a in cis.get("analogs") or [] if isinstance(a, dict)]
+    parts += [str(cis.get("hypothesis") or "")]
+    parts += [m.get("caption", "") for m in (report.get("images") or []) + (report.get("videos_resolved") or [])]
     return "\n".join(parts)
 
 
@@ -408,13 +432,15 @@ def classification_line(report: dict) -> str:
             f"<b>Тип:</b> {escape(str(report.get('business_type') or '—'))}")
 
 
-def build_post(report: dict, date_str: str, channel_name: str) -> str:
+def build_post(report: dict, date_str: str, channel_name: str = "", question: bool = True) -> str:
+    """Section and type first (owner's rule), the teaser, the discussion question (§17), the reading time."""
+    q = str(report.get("discussion_question") or "").strip()
     return (f"{classification_line(report)}\n"
             f"🔎 <b>{RUBRIC.upper()}</b> · {escape(date_str)}\n"
             f"<b>{escape(report['headline'])}</b>\n\n"
             f"{escape(report.get('teaser', ''))}\n\n"
-            f"{reading_line(article_text(report))}\n"
-            f"Подписывайтесь на «Школу единорогов»: {escape(channel_name)}")
+            + (f"💬 <i>{escape(q)}</i>\n\n" if q and question else "")
+            + reading_line(article_text(report)))
 
 
 def publication_status(report: dict, page_check: tuple[int, int] | None = None) -> dict:
@@ -426,8 +452,9 @@ def publication_status(report: dict, page_check: tuple[int, int] | None = None) 
             missing.append(f"на опубликованной странице изображений {img} из {MIN_IMAGES}")
         if vid < MIN_VIDEOS:
             missing.append(f"на опубликованной странице видео {vid} из {MIN_VIDEOS}")
-    limits = [str(x) for x in (report.get("fact_check") or {}).get("limits") or [] if x]
+    limits = [str(x) for x in (report.get("research_notes") or report.get("fact_check") or {}).get("limits") or [] if x]
     return {"status": "BLOCKED" if missing else "READY", "missing": missing, "limits": limits,
+            "quality": quality_score(report),
             "images": len(report.get("images") or []), "videos": len(report.get("videos_resolved") or []),
             "rights_to_check": sum(1 for m in report.get("images") or [] if m.get("license") == LICENSE_PAGE)}
 
@@ -545,7 +572,9 @@ def header_url(app: App) -> str | None:
 
 
 def _send_post(app: App, report: dict, date_str: str, url: str, registry: SourceRegistry) -> int:
-    html = build_post(report, date_str, app.settings.telegram_chat_id)
+    html = build_post(report, date_str)
+    if visible_len(html) > CAPTION_LIMIT:  # the picture matters more than the question: drop it to fit the caption
+        html = build_post(report, date_str, question=False)
     button = ("🔎 Читать расследование", url)
     chat = app.target_chat(riddle=True)
     top = hero(report)
@@ -632,6 +661,7 @@ def publish(app: App, today: str | None = None) -> str:
     _archive_add(app, report, today, url)
     mode = app.settings.riddle_publish_mode
     app.notify_admin(f"{RUBRIC} {today} ({mode}): {report['company_name']} — READY, изображений {status['images']}, "
-                     f"видео {status['videos']}; права на {status['rights_to_check']} кадров со страниц-источников "
-                     f"проверить перед выходом в канал. Видеобриф: python -m investor_agent riddle-brief --date {today}")
+                     f"видео {status['videos']}, редакционная оценка {status.get('quality')}/10; права на "
+                     f"{status['rights_to_check']} кадров со страниц-источников проверить перед выходом в канал. "
+                     f"Заметки, видеобриф и исследование: python -m investor_agent riddle-brief --date {today}")
     return "published"

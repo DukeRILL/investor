@@ -9,7 +9,7 @@ from investor_agent.scheduler import RIDDLE_PUBLISH_TIME, Scheduler
 from investor_agent.sources import SourceRegistry
 from investor_agent.timeutil import BEIJING
 
-RU = "Основатели заметили дорогую проблему клиентов и превратили её в повторяющиеся продажи. " * 16
+RU = "Основатели заметили дорогую проблему клиентов и превратили её в повторяющиеся продажи. " * 12
 JPEG = b"\xff\xd8" + b"x" * 9000
 
 
@@ -30,8 +30,12 @@ def story(registry, videos=3, teaser=None):
     return {
         "company_name": "Acme", "industry": "логистика", "country": "США", "category": "Логистика",
         "business_type": "B2B SaaS по подписке",
-        "concept": {"riddle": "Как скучная накладная стала бизнесом на миллиард?", "angle": "невидимая проблема",
-                    "mechanism": "подписка", "headlines": ["Один", "Два", "Три"]},
+        "editorial_notes": {"angles": [{"angle": f"Ракурс {i}", "scores": {"surprise": 4, "story": 4, "evidence": 5,
+                                                                           "viral": 4}} for i in range(3)], "chosen": 0},
+        "concept": {"riddle": "Как скучная накладная стала бизнесом на миллиард?",
+                    "headlines": [{"mechanic": m, "text": m} for m in ("парадокс", "скрытый механизм", "неожиданное решение")]},
+        "discussion_question": "Вы бы отказались от наценки ради экосистемы?",
+        "quality": {"interest": 9, "substance": 8, "clarity": 9, "no_repeats": 9, "shareability": 8, "repeats_found": False},
         "headline": "Как скучная накладная стала бизнесом на миллиард",
         "teaser": teaser if teaser is not None else "Компания Acme зарабатывает на том, что все считали скучным. " * 9,
         "sections": sections,
@@ -40,15 +44,13 @@ def story(registry, videos=3, teaser=None):
         "charts": [{"title": "Выручка", "unit": "млн $", "kind": "bar", "act": "evidence", "source": "S1",
                     "points": [{"label": "2021", "value": 1}, {"label": "2022", "value": 3}, {"label": "2023", "value": 7}]}],
         "media": [{"source": f"S{i}", "kind": "photo", "act": "before", "role": "hero" if i == 1 else "inline",
-                   "caption": f"Фото {i}", "function": "продукт"} for i in range(1, 9)],
+                   "caption": f"Фото {i}", "function": "продукт"} for i in range(1, 11)],
         "videos": _videos(registry, videos),
-        "cis": {"analogs": [{"name": f"Аналог {i}", "country": "Россия", "source": f"S{i}", "kind": "direct",
-                             "product": "сервис", "similarity": "модель", "difference": "рынок"} for i in range(7, 10)],
-                "verdict": "ТЕСТИРОВАТЬ", "arguments": ["спрос есть", "конкуренты слабые"], "main_risk": "платежи",
-                "confidence": "средняя", "would_change": "данные о CAC", "adaptation": "сервис для малого опта",
-                "mvp": [f"шаг {i}" for i in range(6)], "experiment_30d": "30 дней, 20 звонков"},
-        "video_brief": {"hook": "Скучная бумага стоит миллиард", "format": "Боль на миллиард"},
-        "fact_check": {"verified": [], "unconfirmed": ["Доля основателя"], "limits": []},
+        "cis": {"analogs": [{"name": f"Аналог {i}", "country": "Россия", "source": f"S{i}", "essence": "сервис",
+                             "similarity": "модель", "difference": "рынок"} for i in range(7, 10)],
+                "verdict": "ТРЕБУЕТ ПРОВЕРКИ", "hypothesis": ""},
+        "video_brief": {"hook": "Скучная бумага стоит миллиард", "concept": "Боль на миллиард"},
+        "research_notes": {"facts": [], "unconfirmed": ["Доля основателя"], "limits": []},
     }
 
 
@@ -75,11 +77,32 @@ def test_validate_story_rules():
     good = story(reg)
     assert riddle.validate_story(good, reg) == []
     assert any("excluded" in e for e in riddle.validate_story(good, reg, {"acme"}))
-    bad = story(SourceRegistry(), teaser="Короткий анонс. ТЕСТИРОВАТЬ")
-    bad["cis"]["verdict"] = "может быть"
+    bad = story(SourceRegistry(), teaser="Короткий анонс. ТРЕБУЕТ ПРОВЕРКИ")
+    bad["cis"]["verdict"] = "ТЕСТИРОВАТЬ"  # the old verdict scale is gone
     bad["sections"] = bad["sections"][:-1]
     errors = " | ".join(riddle.validate_story(bad, SourceRegistry()))
-    assert "teaser has" in errors and "cis.verdict" in errors and "act 'cis'" in errors
+    assert "teaser has" in errors and "cis.verdict" in errors and "act 'discovery'" in errors
+
+
+def test_new_master_prompt_rules():
+    reg = SourceRegistry()
+    weak = story(reg)
+    weak["quality"] = {"interest": 7, "substance": 7, "clarity": 8, "no_repeats": 6, "shareability": 7, "repeats_found": True}
+    weak["editorial_notes"]["angles"] = weak["editorial_notes"]["angles"][:1]
+    weak["discussion_question"] = ""
+    errors = " | ".join(riddle.validate_story(weak, reg))
+    assert "below 8.0" in errors and "repeated meaning" in errors and "three different angles" in errors
+    assert "discussion_question" in errors
+    long = story(SourceRegistry())
+    long["sections"][3]["body"] += " слово" * 4000  # too long and over the 20-minute ceiling
+    errors = " | ".join(riddle.validate_story(long, SourceRegistry()))
+    assert "at most 1,600" in errors and "limit is 20" in errors
+    plan = story(SourceRegistry())
+    plan["sections"][7]["body"] += " план" * 300  # the CIS block is not a business plan
+    plan["cis"]["analogs"] *= 2
+    errors = " | ".join(riddle.validate_story(plan, SourceRegistry()))
+    assert "cis section has" in errors and "at most 3" in errors
+    assert riddle.quality_score(story(SourceRegistry())) == 8.65
 
 
 def test_full_cycle_draft_goes_to_admin_with_12_images_and_3_videos(make_app):
@@ -97,13 +120,16 @@ def test_full_cycle_draft_goes_to_admin_with_12_images_and_3_videos(make_app):
     assert post["photo"].startswith("https://res.cloudinary.com/test/")  # rubric picture + company name, sector, logo
     assert post["html"].startswith("<b>Раздел:</b> Логистика · <b>Тип:</b> B2B SaaS по подписке\n")
     assert post["button"] == ("🔎 Читать расследование", "https://telegra.ph/test-page")
-    assert "РАЗГАДКА БИЗНЕСА" in post["html"] and "Время чтения:" in post["html"] and "ТЕСТИРОВАТЬ" not in post["html"]
+    assert "РАЗГАДКА БИЗНЕСА" in post["html"] and "Время чтения:" in post["html"] and "ТРЕБУЕТ ПРОВЕРКИ" not in post["html"]
+    assert "💬 <i>Вы бы отказались от наценки ради экосистемы?</i>" in post["html"]
     title, nodes = app.telegraph.pages[0]
     assert title.startswith("Разгадка бизнеса: ")
     header = app.store.get("riddle_header_url_v3")
     assert nodes[0]["children"][0]["attrs"]["src"] == header  # the rubric header opens the article
     imgs, vids = riddle.count_page_media(nodes, {header})
     assert imgs >= 12 and vids == 3
+    text = json.dumps(nodes, ensure_ascii=False)
+    assert "Вывод: ТРЕБУЕТ ПРОВЕРКИ." in text and "Эксперимент на 30 дней" not in text and "Главные источники" in text
     assert riddle.archive(app)[0]["name"] == "Acme" and "acme" in riddle.excluded_names(app)
     assert riddle.publish(app, "2026-11-09") == "already_published"
 

@@ -62,8 +62,11 @@ def main() -> None:
         draft = app.store.draft_get(riddle.draft_key(args.date or riddle.issue_date()))
         report = (draft or {}).get("payload", {}).get("report", {})
         print(json.dumps({"status": draft and draft["status"], "page_url": draft and draft.get("page_url"),
-                          "concept": report.get("concept"), "video_brief": report.get("video_brief"),
-                          "fact_check": report.get("fact_check"), "cis": report.get("cis"),
+                          "editorial_notes": report.get("editorial_notes"), "concept": report.get("concept"),
+                          "cover": report.get("cover"), "share_fact": report.get("share_fact"),
+                          "discussion_question": report.get("discussion_question"), "quality": report.get("quality"),
+                          "video_brief": report.get("video_brief"), "cis": report.get("cis"),
+                          "research_notes": report.get("research_notes") or report.get("fact_check"),
                           "publication": (draft or {}).get("payload", {}).get("status"),
                           "manifests": (draft or {}).get("payload", {}).get("manifests")}, ensure_ascii=False, indent=2))
     elif args.command == "glossary":
