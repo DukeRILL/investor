@@ -25,9 +25,15 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)  # httpx INFO logs full URLs, incl. api_key=
     parser = argparse.ArgumentParser(prog="investor_agent")
     parser.add_argument("command", choices=["prepare", "publish", "preview", "poll", "poll-close", "radar", "digest", "glossary", "status",
-                                                "riddle", "riddle-publish", "riddle-brief"])
+                                            "riddle", "riddle-publish", "riddle-brief", "growth-daily", "growth-report",
+                                            "growth-updates", "growth-link", "growth-export", "growth-backfill", "reconcile",
+                                            "poll-accept"])
     parser.add_argument("--company", help="riddle: investigate this company instead of letting the agent choose")
     parser.add_argument("--date", help="issue date YYYY-MM-DD (Beijing) for prepare/publish")
+    parser.add_argument("--message-id", type=int, help="reconcile: id of the issue post that is in the channel")
+    parser.add_argument("--not-sent", action="store_true", help="reconcile: the post is not in the channel")
+    parser.add_argument("--source", help="growth-link: instagram|tiktok|youtube|vk|whatsapp|other")
+    parser.add_argument("--out", default="data/export", help="growth-export directory")
     args = parser.parse_args()
     app = build_app(load_settings())
     if args.command == "prepare":
@@ -38,6 +44,7 @@ def main() -> None:
         print(unicorn.preview(app, args.date))
     elif args.command == "poll":
         issue = args.date or poll.next_issue(unicorn.issue_date())
+        app.store.set(f"unicorn_poll_intent:{issue}", "")  # a manual run: the owner has checked the channel
         options = poll.make_options(app, issue, app.store.recent_archive(14, issue))
         print(json.dumps({"issue": issue, "message_id": poll.post(app, issue, options), "options": options},
                          ensure_ascii=False))
@@ -60,10 +67,36 @@ def main() -> None:
                           "publication": (draft or {}).get("payload", {}).get("status"),
                           "manifests": (draft or {}).get("payload", {}).get("manifests")}, ensure_ascii=False, indent=2))
     elif args.command == "glossary":
-        print(glossary.sync(app))
+        print(glossary.sync(app, force=True))  # manual run: the owner has checked the channel
+    elif args.command == "poll-accept":
+        print(poll.accept(app, args.date or poll.next_issue(unicorn.issue_date()), args.message_id or 0))
+    elif args.command == "reconcile":
+        print(unicorn.reconcile(app, args.date or unicorn.issue_date(), args.message_id, args.not_sent))
+    elif args.command.startswith("growth-"):
+        from .growth import collect, report as greport  # noqa: PLC0415
+        from .growth.links import db, make_link  # noqa: PLC0415
+
+        if args.command == "growth-daily":
+            print(greport.run_daily(app))
+        elif args.command == "growth-report":
+            print(greport.build_report(app))
+        elif args.command == "growth-updates":
+            print(json.dumps(collect.poll_updates(app)))
+        elif args.command == "growth-export":
+            print(json.dumps(greport.export(app, args.out)))
+        elif args.command == "growth-backfill":
+            print(greport.backfill(app))
+        else:  # growth-link: an invite link for one external source and one issue; prints the link
+            pub = db(app).publication_by_date(args.date or unicorn.issue_date())
+            if not pub or not args.source:
+                raise SystemExit("need a published --date and --source")
+            link = make_link(app, pub["id"], pub["issue_date"], args.source, "manual")
+            print(link.get("invite_link") or link["target_url"])
     else:
         draft = app.store.draft_get(args.date or unicorn.issue_date())
-        print(json.dumps({"publish_mode": app.settings.publish_mode,
+        pending = unicorn.unresolved_states(app)  # a rollback is allowed only when all of them are empty
+        rollback_ok = not (pending["publish"] or pending["pages"] or pending["poll"] or pending["glossary"])
+        print(json.dumps({"publish_mode": app.settings.publish_mode, "unresolved_states": pending, "rollback_allowed": rollback_ok,
                           "unicorn": draft and {k: draft[k] for k in ("status", "page_url", "error")},
                           "reader_topic": app.store.get(poll.topic_key(args.date or unicorn.issue_date())),
                           "radar_last_ok": app.store.last_ok_window_end()}, ensure_ascii=False, indent=2))

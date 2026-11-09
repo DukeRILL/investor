@@ -5,7 +5,7 @@ import threading
 from contextlib import asynccontextmanager
 
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from .app import build_app
@@ -51,4 +51,18 @@ async def health(_request):
     })
 
 
-app = Starlette(routes=[Route("/health", health)], lifespan=lifespan)
+async def go(request):
+    """Tracked click -> 302 to the stored target. Unknown code: 404 (never a redirect to user input)."""
+    from .growth.redirect import resolve_click  # noqa: PLC0415
+
+    app_ = state.get("app")
+    client = request.client.host if request.client else ""
+    ip = (request.headers.get("x-forwarded-for", client).split(",")[0].strip() if settings.trust_proxy else client)
+    target = resolve_click(app_, request.path_params["code"], request.headers.get("user-agent", ""), ip,
+                           settings.telegram_bot_token[-8:] or "salt") if app_ else None
+    if not target:
+        return Response("not found", status_code=404)
+    return RedirectResponse(target, status_code=302, headers={"Cache-Control": "no-store"})
+
+
+app = Starlette(routes=[Route("/health", health), Route("/go/{code}", go)], lifespan=lifespan)

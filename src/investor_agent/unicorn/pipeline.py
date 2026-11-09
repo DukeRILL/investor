@@ -1,5 +1,6 @@
 """Unicorn School: prepare a report at night (off-peak, 04:30), publish at 10:00 Beijing, then the topic poll."""
 
+import hashlib
 import json
 import logging
 import re
@@ -17,6 +18,7 @@ from ..telegram import TelegramError
 from ..textfmt import READING_WPM, reading_line, reading_minutes, table_nodes, text_to_nodes, to_tg_html, visible_len
 from ..timeutil import PeakHoursError, now_bj, ru_date
 from .. import glossary
+from ..growth import publish as growth_publish
 from . import factcheck, poll
 from .precheck import prune_dead_media
 
@@ -574,19 +576,48 @@ def _first_heading(nodes: list, default: str) -> str:
     return default
 
 
-def create_pages(telegraph, title: str, nodes: list) -> str:
+def create_pages(telegraph, title: str, nodes: list, progress=None) -> str:
     """One Telegraph page, or linked parts when the issue is long. The link to the next part carries the title of
-    the section it starts with (not "part 2"). Returns the first URL."""
+    the section it starts with (not "part 2"). Returns the first URL.
+
+    progress = (get, put) over a JSON dict {"n": parts, "urls": {index: url}, "creating": index|None}. It is saved
+    before and after every createPage, so after a crash the chain is continued: finished parts are reused, a part
+    whose createPage may have run is looked up by its exact title (a failed or ambiguous lookup raises: a second
+    page is never created blindly)."""
     pages = paginate(nodes)
+    get, put = progress or (lambda: {}, lambda st: None)
+    st = get() or {}
+    sig = [{"title": title if i == 0 else f"{_first_heading(p, 'Продолжение')} · {title}",
+            "hash": hashlib.sha256(json.dumps(p, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]}
+           for i, p in enumerate(pages)]
+    if st and (st.get("sig") != sig or st.get("n") != len(pages)):  # any difference: never createPage blindly
+        raise RuntimeError("страницы статьи после сбоя разбиты иначе, чем до него: нужна ручная сверка в Telegraph")
+    st["n"], st["sig"] = len(pages), sig
+    urls = st.setdefault("urls", {})
     next_url, next_name = None, ""
     for index in range(len(pages) - 1, -1, -1):
         content = list(pages[index])
         name = _first_heading(pages[index], "Продолжение")
+        if str(index) in urls:
+            next_url, next_name = urls[str(index)], name
+            continue
         if next_url:
             content.append({"tag": "p", "children": [{"tag": "a", "attrs": {"href": next_url},
                                                       "children": [f"Читать дальше: {next_name} →"]}]})
         page_title = title if index == 0 else f"{name} · {title}"
-        next_url, next_name = telegraph.create_page(page_title, content), name
+        if st.get("creating") == index:  # createPage may have run just before the crash
+            found = telegraph.find_page(page_title)
+            if found:
+                urls[str(index)], st["creating"] = found, None
+                put(st)
+                next_url, next_name = found, name
+                continue
+        st["creating"] = index
+        put(st)
+        url = telegraph.create_page(page_title, content)
+        urls[str(index)], st["creating"] = url, None
+        put(st)
+        next_url, next_name = url, name
     return next_url
 
 
@@ -617,6 +648,8 @@ def _send_post(app: App, report: dict, date_str: str, url: str) -> int:
         try:
             return app.telegram.send_photo(app.target_chat(), hero["src"], html, button=button)
         except TelegramError as exc:
+            if exc.ambiguous:  # the photo may have been delivered: a text fallback could make a second post
+                raise
             log.warning("photo post failed (%s); sending text", exc)
     return app.telegram.send(app.target_chat(), html, button=button)
 
@@ -644,17 +677,65 @@ def publish(app: App, today: str | None = None) -> str:
     report = payload["report"]
     registry = _registry_from(payload["sources"])
     date_str = ru_date(datetime.fromisoformat(today))
+    skey = _state_key(today)
+    state = app.store.get(skey) or ""
+    if state == MANUAL:
+        return MANUAL  # waiting for `reconcile`; nothing is retried automatically
+    if state == "sending":  # a crash between the intent and the result: delivery is unknown
+        _to_manual(app, today, "процесс оборвался при отправке поста")
+        return MANUAL
     try:
-        if not draft.get("page_url"):
+        url = draft.get("page_url")
+        if not url:
             prune_dead_media(report, app.http)  # dead pictures/videos are dropped just before the page is built
-        url = draft.get("page_url") or create_pages(app.telegraph, *build_page(report, registry, date_str, cover_url(app), logo_url(app)))
+            title, nodes = build_page(report, registry, date_str, cover_url(app), logo_url(app))
+            pkey = f"unicorn_pages:{today}"
+            url = create_pages(app.telegraph, title, nodes + growth_publish.begin(app, today, report),  # + CTA
+                               (lambda: json.loads(app.store.get(pkey) or "{}"),
+                                lambda st: app.store.set(pkey, json.dumps(st))))
         app.store.draft_mark(today, "ready", page_url=url)
-        mid = _send_post(app, report, date_str, url)
+        app.store.set(f"unicorn_pages:{today}", "")
+        growth_publish.page_created(app, today, report, url)  # share block; never raises
+        if state.startswith("sent:"):
+            mid = int(state.split(":", 1)[1])  # the post is already in the channel: only finish
+            if mid <= 0:
+                raise RuntimeError("в состоянии публикации неверный message_id")
+        else:
+            app.store.set(skey, "sending")
+            try:
+                mid = _send_post(app, report, date_str, url)
+            except TelegramError as exc:
+                if exc.ambiguous:  # may have been delivered: do not resend, do not call it published
+                    _to_manual(app, today, f"ответ Telegram не получен ({exc})")
+                    return MANUAL
+                app.store.set(skey, "")  # a definite refusal: a retry may send
+                raise
+            app.store.set(skey, f"sent:{mid}")
     except Exception as exc:  # noqa: BLE001
         app.store.draft_mark(today, "ready", error=str(exc)[:500])
         app.notify_admin(f"Школа единорогов: публикация {today} не удалась: {exc}")
         return "failed"
-    app.store.draft_mark(today, "published", page_url=url, message_ids=[mid])
+    return _complete(app, today, report, payload, url, mid)
+
+
+MANUAL = "requires_manual_reconcile"
+
+
+def _state_key(today: str) -> str:
+    return f"unicorn_publish_state:{today}"
+
+
+def _to_manual(app: App, today: str, reason: str) -> None:
+    app.store.set(_state_key(today), MANUAL)
+    app.notify_admin(f"Школа единорогов: выпуск {today} — {reason}. Неизвестно, ушёл ли пост в канал; автоматически "
+                     f"не повторяю. Проверьте канал и выполните: python -m investor_agent reconcile --date {today} "
+                     "--message-id <id поста> (пост есть) или --not-sent (поста нет).")
+
+
+def _complete(app: App, today: str, report: dict, payload: dict, url: str, mid: int) -> str:
+    """Everything after a delivered post. Every step is idempotent (archive upsert, poll guarded by its key, buttons
+    re-set, glossary terms deduplicated), 'published' is written last, so a crash anywhere resumes here."""
+    growth_publish.post_sent(app, today, report, url, mid)  # message id + "Отправить другу" button; never raises
     chosen = payload.get("chosen", {})
     app.store.archive_add(report["company_name"], report.get("industry") or chosen.get("industry", ""),
                           report.get("country") or chosen.get("country", ""), today, url,
@@ -662,6 +743,9 @@ def publish(app: App, today: str | None = None) -> str:
     tomorrow = poll.next_issue(today)  # readers vote on the topic of the next issue right after this one
     poll.post(app, tomorrow, payload.get("poll_options") or poll.make_options(app, tomorrow))
     _grow_glossary(app, report)  # after the poll: the issue post and the poll keep their places in the channel
+    app.store.draft_mark(today, "published", page_url=url, message_ids=[mid])
+    app.store.set(_state_key(today), "")
+    app.store.set(f"unicorn_pages:{today}", "")
     return "published"
 
 
@@ -679,3 +763,45 @@ def preview(app: App, today: str | None = None) -> str:
     url = create_pages(app.telegraph, title, nodes)
     app.notify_admin(f"Драфт Школы единорогов ({today}) с новой шапкой: {url}")
     return url
+
+
+def reconcile(app: App, today: str, message_id: int | None = None, not_sent: bool = False) -> str:
+    """Continue after the owner has looked at the channel. message_id: the post is there, finish the issue with that
+    id. not_sent: it is not there, the next publish may send it."""
+    if app.store.get(_state_key(today)) != MANUAL:
+        return "nothing_to_reconcile"
+    if bool(message_id) == bool(not_sent):
+        raise ValueError("give exactly one of --message-id and --not-sent")
+    if message_id is not None and message_id <= 0:
+        raise ValueError("message_id must be a positive number")
+    if not_sent:
+        app.store.set(_state_key(today), "")
+        return "cleared"
+    app.store.set(_state_key(today), f"sent:{int(message_id)}")
+    return publish(app, today)
+
+
+def unresolved_states(app: App) -> dict:
+    """Every state that makes a rollback or a restart unsafe: publication, Telegraph pages, poll, glossary."""
+    out: dict = {"publish": {}, "pages": {}, "poll": {}, "glossary": None}
+    with app.store._conn() as c:
+        rows = [(r["key"], r["value"]) for r in c.execute(
+            "SELECT key, value FROM kv WHERE key LIKE 'unicorn_publish_state:%' OR key LIKE 'unicorn_pages:%' "
+            "OR key LIKE 'unicorn_poll_intent:%'")]
+    for key, value in rows:
+        name, _, day = key.partition(":")
+        if name.endswith(":options") or day.endswith(":options") or day.endswith(":told") or not value:
+            continue
+        if name == "unicorn_publish_state":
+            out["publish"][day] = value
+        elif name == "unicorn_pages":
+            out["pages"][day] = "unfinished"
+        elif name == "unicorn_poll_intent" and value == "sending":
+            out["poll"][day] = value
+    try:
+        gstate = json.loads(app.store.get(glossary.STATE_KEY, "{}"))
+    except ValueError:
+        gstate = {}
+    if gstate.get("sending") is not None:
+        out["glossary"] = "sending"
+    return out

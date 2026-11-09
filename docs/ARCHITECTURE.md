@@ -18,6 +18,7 @@
 │   ├─ Search / Fetch API DeepSeek — поиск и чтение страниц
 │   └─ защита: вызов в дорогое время → PeakHoursError → перенос
 │
+├─ growth/ — блоки подписки и репоста, invite-ссылки, chat_member (каждые 5 мин), сбор статистики и отчёт (08:00), см. [GROWTH.md](GROWTH.md)
 ├─ Реестр источников (sources.py) — модель ссылается только на [S1]…, URL подставляет код
 ├─ SQLite (storage.py) — архив компаний, черновики, алерты, потоки ETF, расходы, блокировки
 └─ Telegram + Telegraph (telegram.py)

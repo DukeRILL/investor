@@ -113,18 +113,55 @@ def tally(options: list[str], counts: list[int]) -> list[str]:
 
 def post(app: App, issue: str, options: list[str]) -> int | None:
     """Send the poll for issue `issue` to the channel. Failures go to the admin, never stop the publication."""
+    intent = f"unicorn_poll_intent:{issue}"
     if app.store.get(poll_key(issue)):
+        for leftover in (intent, intent + ":told"):  # a crash after poll_key, before the intent was cleared
+            if app.store.get(leftover):
+                app.store.set(leftover, "")
+        return None
+    if app.store.get(intent) == "sending":  # a crash or an unanswered call: it may be in the channel, never repeat
+        if app.store.get(intent + ":told") != "1":
+            app.store.set(intent + ":told", "1")
+            app.notify_admin(f"Школа единорогов: неизвестно, ушло ли голосование на {issue} в канал. Автоматически "
+                             "не повторяю. Проверьте канал; если опроса нет, "
+                             f"отправьте его вручную: python -m investor_agent poll --date {issue}; если он есть: "
+                             f"python -m investor_agent poll-accept --date {issue} --message-id <id>")
         return None
     chat = app.target_chat()
+    app.store.set(intent + ":options", json.dumps(options, ensure_ascii=False))  # for `poll-accept`
+    app.store.set(intent, "sending")
     try:
         mid = app.telegram.send_poll(chat, QUESTION, options)
     except TelegramError as exc:
+        if not exc.ambiguous:
+            app.store.set(intent, "")  # a definite refusal: a later run may try again
         app.notify_admin(f"Школа единорогов: голосование за тему на {issue} не отправлено: {exc}")
         return None
+    _record(app, issue, chat, mid, options)  # history + poll_key first, the intent is cleared last
+    app.store.set(intent, "")
+    return mid
+
+
+def _record(app: App, issue: str, chat: str, mid: int, options: list[str]) -> None:
     remember(app, issue, options)
     app.store.set(poll_key(issue), json.dumps({"chat": chat, "message_id": mid, "options": options,
                                                "posted_at": utc_iso()}, ensure_ascii=False))
-    return mid
+
+
+def accept(app: App, issue: str, message_id: int) -> str:
+    """The owner saw the poll in the channel after an unanswered or interrupted send: record it with the options
+    that were sent. Only for an unresolved intent."""
+    intent = f"unicorn_poll_intent:{issue}"
+    if message_id <= 0:
+        raise ValueError("message_id must be a positive number")
+    if app.store.get(intent) != "sending" or app.store.get(poll_key(issue)):
+        return "nothing_to_accept"
+    options = json.loads(app.store.get(intent + ":options") or "[]")
+    if not options:
+        raise ValueError("no saved options for this poll")
+    _record(app, issue, app.target_chat(), message_id, options)
+    app.store.set(intent, "")
+    return "accepted"
 
 
 def close_at(issue: str) -> datetime:

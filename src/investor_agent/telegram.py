@@ -8,8 +8,32 @@ from .http import Http, HttpError
 log = logging.getLogger(__name__)
 
 
+NON_IDEMPOTENT = {"sendMessage", "sendPhoto", "sendPoll", "createChatInviteLink"}  # a repeat would duplicate
+
+
 class TelegramError(RuntimeError):
-    pass
+    """ambiguous=True: the request may have been executed (timeout, connection lost, 5xx) - the caller must not
+    assume 'not delivered'. A Telegram answer ok=false or HTTP 4xx is a definite failure."""
+
+    def __init__(self, message: str = "", ambiguous: bool = False):
+        super().__init__(message)
+        self.ambiguous = ambiguous
+
+
+def _is_transport(exc: Exception) -> bool:
+    """Connection lost / timeout / TLS: the request may or may not have reached the server."""
+    return isinstance(exc, (OSError, TimeoutError)) or type(exc).__module__.startswith("httpx")
+
+
+def _message_id(result: dict, method: str) -> int:
+    """A positive id or an ambiguous error: the call answered ok but without a usable id (delivery unknown)."""
+    try:
+        mid = int(result["message_id"])
+    except (KeyError, TypeError, ValueError):
+        mid = 0
+    if mid <= 0:
+        raise TelegramError(f"{method}: no valid message_id in the answer", ambiguous=True)
+    return mid
 
 
 class TelegramClient:
@@ -20,10 +44,15 @@ class TelegramClient:
         if not self._token:
             raise TelegramError("TELEGRAM_BOT_TOKEN is not configured")
         try:
+            extra = {} if method not in NON_IDEMPOTENT else {"retry": False}
             data = self.http.request("POST", f"https://api.telegram.org/bot{self._token}/{method}",
-                                     json_body=payload, timeout=60)
+                                     json_body=payload, timeout=60, **extra)
         except HttpError as exc:  # strip URL with token from the message
-            raise TelegramError(f"{method} failed: HTTP {exc.status}") from None
+            raise TelegramError(f"{method} failed: HTTP {exc.status}", ambiguous=exc.status >= 500 or exc.status == 408) from None
+        except Exception as exc:  # noqa: BLE001
+            if _is_transport(exc):
+                raise TelegramError(f"{method} failed: {type(exc).__name__}", ambiguous=True) from None
+            raise
         if not isinstance(data, dict) or not data.get("ok"):
             desc = data.get("description") if isinstance(data, dict) else "bad response"
             raise TelegramError(f"{method} failed: {desc}")
@@ -37,14 +66,14 @@ class TelegramClient:
             payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
         if button:
             payload["reply_markup"] = {"inline_keyboard": [[{"text": button[0], "url": button[1]}]]}
-        return int(self._call("sendMessage", payload)["message_id"])
+        return _message_id(self._call("sendMessage", payload), "sendMessage")
 
     def send_photo(self, chat_id: str, photo_url: str, html: str, button: tuple[str, str] | None = None) -> int:
         """Photo by public URL with an HTML caption (max 1024 visible characters)."""
         payload = {"chat_id": chat_id, "photo": photo_url, "caption": html, "parse_mode": "HTML"}
         if button:
             payload["reply_markup"] = {"inline_keyboard": [[{"text": button[0], "url": button[1]}]]}
-        return int(self._call("sendPhoto", payload)["message_id"])
+        return _message_id(self._call("sendPhoto", payload), "sendPhoto")
 
     def edit_caption(self, chat_id: str, message_id: int, html: str, button: tuple[str, str] | None = None) -> None:
         """Change the caption of a photo post. The button must be passed again or Telegram removes it."""
@@ -70,11 +99,33 @@ class TelegramClient:
         """Anonymous regular poll (channels allow only anonymous polls)."""
         payload = {"chat_id": chat_id, "question": question, "options": [{"text": o} for o in options],
                    "is_anonymous": True, "allows_multiple_answers": False}
-        return int(self._call("sendPoll", payload)["message_id"])
+        return _message_id(self._call("sendPoll", payload), "sendPoll")
 
     def stop_poll(self, chat_id: str, message_id: int) -> dict:
         """Close a poll sent by the bot; returns the final Poll with voter_count per option."""
         return self._call("stopPoll", {"chat_id": chat_id, "message_id": message_id})
+
+    def set_buttons(self, chat_id: str, message_id: int, rows: list[list[tuple[str, str]]]) -> None:
+        """Replace the inline keyboard of a post (rows of (text, url))."""
+        keyboard = [[{"text": t, "url": u} for t, u in row] for row in rows]
+        self._call("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": message_id,
+                                              "reply_markup": {"inline_keyboard": keyboard}})
+
+    def create_invite_link(self, chat_id: str, name: str) -> str:
+        """A separate invite link (its own counter and chat_member.invite_link) for one traffic source."""
+        return self._call("createChatInviteLink", {"chat_id": chat_id, "name": name[:32]})["invite_link"]
+
+    def member_count(self, chat_id: str) -> int:
+        return int(self._call("getChatMemberCount", {"chat_id": chat_id}))
+
+    def webhook_url(self) -> str:
+        return (self._call("getWebhookInfo", {}) or {}).get("url", "")
+
+    def get_updates(self, offset: int | None, allowed: list[str], limit: int = 100) -> list[dict]:
+        payload = {"timeout": 0, "limit": limit, "allowed_updates": allowed}
+        if offset is not None:
+            payload["offset"] = offset
+        return self._call("getUpdates", payload)
 
     def delete(self, chat_id: str, message_id: int) -> bool:
         return bool(self._call("deleteMessage", {"chat_id": chat_id, "message_id": message_id}))
@@ -107,7 +158,16 @@ class TelegraphClient:
         self.short_name, self.author_name, self.author_url = short_name, author_name, author_url
 
     def _call(self, method: str, payload: dict) -> dict:
-        data = self.http.request("POST", f"{self.API}/{method}", json_body=payload, timeout=60)
+        extra = {"retry": False} if method in {"createPage", "createAccount"} else {}
+        try:
+            data = self.http.request("POST", f"{self.API}/{method}", json_body=payload, timeout=60, **extra)
+        except HttpError as exc:
+            raise TelegramError(f"telegraph {method} failed: HTTP {exc.status}",
+                                ambiguous=exc.status >= 500 or exc.status == 408) from None
+        except Exception as exc:  # noqa: BLE001
+            if _is_transport(exc):
+                raise TelegramError(f"telegraph {method} failed: {type(exc).__name__}", ambiguous=True) from None
+            raise
         if not isinstance(data, dict) or not data.get("ok"):
             raise TelegramError(f"telegraph {method} failed: {data.get('error') if isinstance(data, dict) else data}")
         return data["result"]
@@ -139,6 +199,26 @@ class TelegraphClient:
     def get_page(self, url: str) -> list:
         """Content nodes of a published page, to check what readers really get."""
         return self._call("getPage", {"path": url.rstrip("/").rsplit("/", 1)[-1], "return_content": True}).get("content") or []
+
+    def find_page(self, title: str) -> str | None:
+        """URL of the page of this account with exactly this title (recovers a page created just before a crash).
+        None = looked and there is none. Several pages with that title (or a failed lookup) raise: the caller must
+        not create another page then."""
+        result = self._call("getPageList", {"access_token": self._token(), "limit": 200})
+        found = [p["url"] for p in result.get("pages", []) if p.get("title") == title[:256]]
+        if len(found) > 1:
+            raise TelegramError(f"telegraph: {len(found)} pages share the title, reconcile by hand")
+        return found[0] if found else None
+
+    def get_page_full(self, url: str) -> dict:
+        """Current title and content nodes of a page (used to append blocks without recreating it)."""
+        path = url.rstrip("/").rsplit("/", 1)[-1]
+        return self._call(f"getPage/{path}", {"return_content": True})
+
+    def get_views(self, url: str) -> int:
+        """Total views of a page (official getViews; year/month/day/hour narrow the interval, unused here)."""
+        path = url.rstrip("/").rsplit("/", 1)[-1]
+        return int(self._call(f"getViews/{path}", {})["views"])
 
     def create_page(self, title: str, nodes: list) -> str:
         payload = {"access_token": self._token(), "title": title[:256], "author_name": self.author_name,

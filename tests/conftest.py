@@ -40,6 +40,25 @@ class FakeTelegram:
     def send_series(self, chat_id, parts, button=None, reply_to=None):
         return [self.send(chat_id, p, reply_to=reply_to if i == 0 else None) for i, p in enumerate(parts)]
 
+    def set_buttons(self, chat_id, mid, rows):
+        self.buttons = getattr(self, "buttons", {})
+        self.buttons[mid] = rows
+
+    def create_invite_link(self, chat_id, name):
+        self.invites = getattr(self, "invites", []) + [name]
+        return f"https://t.me/+inv{len(self.invites)}"
+
+    def member_count(self, chat_id):
+        return getattr(self, "members", 100)
+
+    def webhook_url(self):
+        return getattr(self, "webhook", "")
+
+    def get_updates(self, offset, allowed, limit=100):
+        self.updates_calls = getattr(self, "updates_calls", []) + [(offset, allowed)]
+        queue = [u for u in getattr(self, "updates", []) if offset is None or u["update_id"] >= offset]
+        return queue
+
     def delete(self, chat_id, mid):
         self.deleted.append(mid)
         return True
@@ -54,17 +73,54 @@ class FakeTelegram:
         return {"options": [{"text": o, "voter_count": v} for o, v in votes]}
 
 
+class Crash(BaseException):
+    """A killed process: not caught by `except Exception`."""
+
+
 class FakeTelegraph:
+    crash_after_create = 0  # raise Crash right after the N-th createPage stored its page (the answer is lost)
+
     def __init__(self):
         self.pages = []
+        self.by_url = {}
+        self.views = {}
+        self.fail_edit = False
 
     def create_page(self, title, nodes):
         self.pages.append((title, nodes))
-        return f"https://telegra.ph/test-page-{len(self.pages)}" if len(self.pages) > 1 else "https://telegra.ph/test-page"
+        url = f"https://telegra.ph/test-page-{len(self.pages)}" if len(self.pages) > 1 else "https://telegra.ph/test-page"
+        self.by_url[url] = (title, list(nodes))
+        if self.crash_after_create and len(self.pages) == self.crash_after_create:
+            raise Crash()
+        return url
 
     def edit_page(self, url, title, nodes):
+        if self.fail_edit:
+            from investor_agent.telegram import TelegramError
+            raise TelegramError("telegraph editPage failed: test")
         self.edited = getattr(self, "edited", []) + [(url, title, nodes)]
+        self.by_url[url] = (title, list(nodes))
         return url
+
+    def find_page(self, title):
+        if getattr(self, "fail_lookup", False):
+            from investor_agent.telegram import TelegramError
+            raise TelegramError("telegraph getPageList failed: test")
+        found = [u for u, (t, _) in self.by_url.items() if t == title]
+        if len(found) > 1:
+            from investor_agent.telegram import TelegramError
+            raise TelegramError("several pages share the title")
+        return found[0] if found else None
+
+    def get_page_full(self, url):
+        title, nodes = self.by_url[url]
+        return {"title": title, "content": nodes}
+
+    def get_views(self, url):
+        if url not in self.views:
+            from investor_agent.telegram import TelegramError
+            raise TelegramError("telegraph getViews failed: PAGE_NOT_FOUND")
+        return self.views[url]
 
     def upload_image(self, data, content_type):
         return "https://telegra.ph/file/test.jpg"
@@ -100,7 +156,7 @@ class FakeDeepSeek:
 def make_app(tmp_path):
     def _make(deepseek=None, telegram=None, mode="auto", admin="111", http=None, images=None):
         settings = Settings(database_path=tmp_path / "db.sqlite3", publish_mode=mode, telegram_admin_chat_id=admin,
-                            deepseek_api_key="k", telegram_bot_token="t")
+                            deepseek_api_key="k", telegram_bot_token="t", growth_enabled=True)
         return App(settings=settings, http=http, store=Store(settings.database_path),
                    deepseek=deepseek or FakeDeepSeek([]), telegram=telegram or FakeTelegram(),
                    telegraph=FakeTelegraph(), images=images)
