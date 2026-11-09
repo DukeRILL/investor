@@ -54,7 +54,7 @@ def share_urls(article_url: str, company: str, hook: str, campaign: str) -> dict
 
 
 def friend_share_url(post_url: str, company: str, hook: str) -> str:
-    """'Отправить другу': Telegram share of the channel post itself."""
+    """'Поделиться в TG': Telegram share of the channel post itself."""
     return f"https://t.me/share/url?url={_q(post_url)}&text={_q(share_text(company, hook))}"
 
 

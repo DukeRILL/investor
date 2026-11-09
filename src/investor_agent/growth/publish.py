@@ -93,7 +93,7 @@ def page_created(app, issue_date: str, report: dict, url: str, platform: str = "
 
 def post_sent(app, issue_date: str, report: dict, url: str, message_id: int, platform: str = "telegram",
               chat: str | None = None, read_label: str = "📖 Читать разбор") -> None:
-    """Remember the post and give it the second button ('Отправить другу' = Telegram share of the channel post)."""
+    """Remember the post and give it the second button ('Поделиться в TG' = Telegram share of the channel post)."""
     if not enabled(app) or message_id <= 0:
         return
     try:
@@ -112,7 +112,7 @@ def post_sent(app, issue_date: str, report: dict, url: str, message_id: int, pla
         hook = share.build_hook(report)
         app.telegram.set_buttons(chat, message_id, [
             [(read_label, read_href)],
-            [("📤 Отправить другу", share.friend_share_url(post_url, _subject(platform, report, report["company_name"]),
+            [("📤 Поделиться в TG", share.friend_share_url(post_url, _subject(platform, report, report["company_name"]),
                                                           hook))]])
     except Exception as exc:  # noqa: BLE001
         log.warning("post buttons not updated (%s)", type(exc).__name__)

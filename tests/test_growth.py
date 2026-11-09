@@ -65,7 +65,7 @@ def test_publish_adds_cta_share_buttons_and_records_everything(make_app):
     pub = gdb.publication_by_date(DAY)
     assert pub["article_url"] == "https://telegra.ph/test-page" and pub["telegram_message_id"] == 1 and pub["share_done"]
     rows = app.telegram.buttons[1]
-    assert rows[0][0][0] == "📖 Читать разбор" and rows[1][0][0] == "📤 Отправить другу"
+    assert rows[0][0][0] == "📖 Читать разбор" and rows[1][0][0] == "📤 Поделиться в TG"
     assert "https%3A%2F%2Ft.me%2Finvestor_duker%2F1" in rows[1][0][1]  # shares the channel post
     assert app.telegram.invites == ["telegraph-cta-2026-11-09"]
 
@@ -1046,7 +1046,7 @@ def test_riddle_footer_has_personal_link_subscribe_text_share_and_friend_button(
     pub = gdb.publication_by_date(DAY, "riddle")
     assert pub["telegram_message_id"] == 1 and pub["share_done"] and gdb.publication_by_date(DAY) is None
     rows = app.telegram.buttons[1]
-    assert rows[0][0][0] == "🔎 Читать расследование" and rows[1][0][0] == "📤 Отправить другу"
+    assert rows[0][0][0] == "🔎 Читать расследование" and rows[1][0][0] == "📤 Поделиться в TG"
     assert "https%3A%2F%2Ft.me%2Finvestor_duker%2F1" in rows[1][0][1]
 
 

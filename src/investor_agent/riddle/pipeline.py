@@ -707,7 +707,7 @@ def publish(app: App, today: str | None = None) -> str:
     if app.settings.riddle_publish_mode == "auto":  # drafts in the admin chat must not reach the public VK group
         _send_vk(app, payload, today, url)
     growth_publish.post_sent(app, today, report, url, mid, "riddle", app.target_chat(riddle=True),
-                             "🔎 Читать расследование")  # message id + "Отправить другу"; never raises
+                             "🔎 Читать расследование")  # message id + "Поделиться в TG"; never raises
     _archive_add(app, report, today, url)
     mode = app.settings.riddle_publish_mode
     app.notify_admin(f"{RUBRIC} {today} ({mode}): {report['company_name']} — READY, изображений {status['images']}, "

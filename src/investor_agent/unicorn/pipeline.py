@@ -737,7 +737,7 @@ def _to_manual(app: App, today: str, reason: str) -> None:
 def _complete(app: App, today: str, report: dict, payload: dict, url: str, mid: int) -> str:
     """Everything after a delivered post. Every step is idempotent (archive upsert, poll guarded by its key, buttons
     re-set, glossary terms deduplicated), 'published' is written last, so a crash anywhere resumes here."""
-    growth_publish.post_sent(app, today, report, url, mid)  # message id + "Отправить другу" button; never raises
+    growth_publish.post_sent(app, today, report, url, mid)  # message id + "Поделиться в TG" button; never raises
     chosen = payload.get("chosen", {})
     app.store.archive_add(report["company_name"], report.get("industry") or chosen.get("industry", ""),
                           report.get("country") or chosen.get("country", ""), today, url,
