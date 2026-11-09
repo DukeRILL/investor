@@ -26,6 +26,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="investor_agent")
     parser.add_argument("command", choices=["prepare", "publish", "poll", "poll-close", "radar", "digest", "glossary", "status",
                                                 "riddle", "riddle-publish", "riddle-brief"])
+    parser.add_argument("--company", help="riddle: investigate this company instead of letting the agent choose")
     parser.add_argument("--date", help="issue date YYYY-MM-DD (Beijing) for prepare/publish")
     args = parser.parse_args()
     app = build_app(load_settings())
@@ -45,7 +46,7 @@ def main() -> None:
     elif args.command == "digest":
         print(radar_digest.run(app))
     elif args.command == "riddle":
-        print(riddle.prepare(app, args.date))
+        print(riddle.prepare(app, args.date, args.company))
     elif args.command == "riddle-publish":
         print(riddle.publish(app, args.date))
     elif args.command == "riddle-brief":

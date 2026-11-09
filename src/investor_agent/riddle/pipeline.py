@@ -429,7 +429,7 @@ def publication_status(report: dict, page_check: tuple[int, int] | None = None) 
 
 # --- jobs -------------------------------------------------------------------------------------
 
-def prepare(app: App, today: str | None = None) -> str:
+def prepare(app: App, today: str | None = None, company: str | None = None) -> str:
     """Night job. Returns ready | blocked | exists | locked | failed. Raises PeakHoursError to be retried later."""
     today = today or issue_date()
     existing = app.store.draft_get(draft_key(today))
@@ -438,7 +438,7 @@ def prepare(app: App, today: str | None = None) -> str:
     if not app.store.acquire("riddle_prepare", minutes=180):
         return "locked"
     try:
-        return _prepare(app, today)
+        return _prepare(app, today, company)
     except PeakHoursError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -451,13 +451,15 @@ def prepare(app: App, today: str | None = None) -> str:
         app.store.release("riddle_prepare")
 
 
-def _prepare(app: App, today: str) -> str:
+def _prepare(app: App, today: str, company: str | None = None) -> str:
     s, ds = app.settings, app.deepseek
     registry = SourceRegistry()
     excluded = excluded_names(app)
     payload = {"date": today,
                "excluded": sorted({a["name"] for a in archive(app)} | {a["name"] for a in app.store.archive_list()}),
                "recent": [{"industry": a.get("industry"), "country": a.get("country")} for a in archive(app)[:7]]}
+    if company:  # the owner chose the company (manual run): skip Step 1
+        payload["company_chosen_by_editor"] = company
     report = ds.research(s.deepseek_model_pro, app.prompt("business_riddle"), payload, registry, max_tool_calls=60,
                          cache_ttl=SEARCH_CACHE_HOURS)
     clean_report(report, registry)

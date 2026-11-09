@@ -14,6 +14,7 @@ MagnatesMedia — intrigue: open with an unexpected fact or contradiction. Acqui
 Target effect: «Теперь я понимаю, почему эта идея выстрелила. И вижу, как можно найти похожую возможность». Not a motivational blog, not an investment report.
 
 ## Step 1. Choose the company
+If `company_chosen_by_editor` is given, investigate exactly that company and skip the choice.
 Pick one real, well-documented fast-growing company (private or public, any country) whose success has a non-obvious, provable mechanism. It must NOT be in `excluded` (already covered by this rubric or by «Школа единорогов»). Avoid the industries and countries listed in `recent` when an equally good option exists. No oil, gas, mining or defence. Prefer companies with founder interviews and videos on YouTube, real product screenshots and public numbers: you will need them.
 
 ## Step 2. Research before writing (tools: `web_search`, `fetch_page`)
