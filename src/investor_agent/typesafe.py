@@ -51,7 +51,7 @@ class Jev:
             raise TypeSafeError("Jev probabilities do not include the chosen option")
         conf = answer.get("confidence")
         return {"choice": answer["choice"], "probabilities": clean,
-                "confidence": 0.0 if conf is None else _unit_interval(conf, "confidence"),
+                "confidence": _unit_interval(conf, "confidence"),  # missing / None is malformed too
                 "model": str(data.get("model") or self.model)}
 
 

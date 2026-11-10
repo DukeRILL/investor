@@ -28,6 +28,7 @@ STATUSES = ("VERIFIED", "UNVERIFIED", "ERROR")
 INVARIANT_FIELDS = ("id", "field", "text", "kind", "material")   # a recheck can never change what was claimed or how important it is
 RECHECK_FIELDS = ("status", "note", "source", "source_url", "source_quote", "source_value", "source_unit",
                   "article_value", "article_unit", "period", "fix")
+SERVER_ONLY_FIELDS = ("jev", "settled", "pending", "fixed", "errors_found")   # set by the gate itself, never read from a model answer
 NUMERIC_KINDS = ("amount", "percent", "count", "deal", "leadership", "quote")
 CACHE_HOURS = 24          # the pages were read during research: re-reading them is free
 MAX_RECHECK_CALLS = 20
@@ -243,6 +244,8 @@ def _normalise(claims) -> list[dict]:
         if not isinstance(c, dict):
             continue
         status = str(c.get("status") or "").upper()
+        for forged in SERVER_ONLY_FIELDS:  # the model never sets what only the server knows
+            c.pop(forged, None)
         c["status"] = status if status in STATUSES else "UNVERIFIED"
         c["id"] = str(c.get("id") or f"C{i + 1}")
         c["material"] = c.get("material") is not False
@@ -493,6 +496,10 @@ def run(app: App, report: dict, registry: SourceRegistry, article: Callable[[dic
     report["fact_ledger"] = claims
     out = summary(claims)
     out["jev"], out["rounds"] = jev_note, rounds
+    unjudged = [c for c in claims if c.get("material") and c.get("status") == "VERIFIED"
+                and (c.get("jev") or {}).get("choice") != "supported"]
+    for c in ([] if jev_note.get("error") else unjudged):  # (no Jev at all: the error line below says so) a VERIFIED claim without a successful server-side Jev answer is not proven
+        out["open"].append(f"{c['id']}: нет подтверждения TypeSafe Jev")
     proven = sum(1 for c in claims if c.get("material") and c.get("status") == "VERIFIED" and c.get("jev"))
     if proven < mode.min_verified and not jev_note.get("error"):  # «nothing material was checked» is not a pass
         out["open"].append(f"проверено существенных утверждений: {proven}, нужно не меньше {mode.min_verified}")
