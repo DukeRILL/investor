@@ -42,6 +42,7 @@ Effects for "effect": "zoom_in", "zoom_out", "pan_left", "pan_right", "face_swee
 Return ONE JSON object and nothing else:
 {"scenarios": [ exactly 4 ], "best": 0-3, "best_why": "short explanation in Russian why this script is the most promising"}
 Each scenario:
-{"hypothesis": "...", "title": "...", "visual_hook": "what the viewer sees in the first 2 seconds, in Russian", "score": 1-10, "why": "one sentence in Russian", "scenes": [ 5 to 7 scenes ]}
+{"hypothesis": "...", "title": "...", "hook": {"type": "number" | "paradox" | "question" | "contrast", "why": "one sentence in Russian"}, "visual_hook": "what the viewer sees in the first 2 seconds, in Russian", "score": 1-10, "why": "one sentence in Russian", "scenes": [ 5 to 7 scenes ]}
+The hook is mandatory in every scenario: the first scene is a hook (never a greeting, a bare company name or background), its on_screen is the hook in 2–5 big words, and "hook" names its type. Code rejects a scenario without it.
 Each scene:
 {"voice": "spoken text", "on_screen": "2–6 big key words in Russian, a key point rather than a copy of the voice", "big_number": null or {"value": 3, "prefix": "$", "suffix": " млрд", "label": "short label"}, "image_id": "img01" or null, "source_type": "original" or "generated", "why": "why this image for this scene, in Russian", "needs_generation": false, "image_prompt": null, "effect": "...", "duration": estimated seconds, "source_quote": "..."}

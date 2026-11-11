@@ -9,7 +9,7 @@ from PIL import Image
 FACE_MODEL = os.environ.get("FACE_MODEL", "/app/models/face_detection_yunet_2023mar.onnx")
 MIN_SIDE = 400  # меньше этого снимок не растянуть до 1080x1920 без мусора
 FOUNDER_RE = re.compile(r"основател|сооснователь|founder|\bceo\b|гендиректор", re.I)
-CHART_RE = re.compile(r"график|диаграмм|по раундам|динамик", re.I)
+CHART_RE = re.compile(r"график|диаграмм|по раундам|динамик|темп выручки|\((млн|млрд) \$\)", re.I)
 PRODUCT_RE = re.compile(r"слайд|продукт|интерфейс|платформ|скриншот|приложени|картинка со страницы", re.I)
 OFFICE_RE = re.compile(r"\bофис", re.I)
 NAME_RE = re.compile(r"[А-ЯЁ][а-яё]+ [А-ЯЁ][а-яё]+")
@@ -88,17 +88,17 @@ def parse_page(page: dict) -> tuple[str, str, list[dict]]:
     return page["title"], "\n".join(blocks), figures
 
 
-def detect_faces(img: Image.Image) -> list[list[int]]:
+def detect_faces(img: Image.Image, score: float = 0.75, min_frac: float = 0.05) -> list[list[int]]:
     """Рамки лиц [x, y, w, h] в пикселях оригинала, нейросеть YuNet (картины и логотипы лицами не считает)."""
     import cv2
     import numpy as np
     bgr = cv2.cvtColor(np.asarray(img.convert("RGB")), cv2.COLOR_RGB2BGR)
     h, w = bgr.shape[:2]
-    det = cv2.FaceDetectorYN.create(FACE_MODEL, "", (w, h), score_threshold=0.75, nms_threshold=0.3)
+    det = cv2.FaceDetectorYN.create(FACE_MODEL, "", (w, h), score_threshold=score, nms_threshold=0.3)
     _, found = det.detect(bgr)
     if found is None:
         return []
-    return sorted([int(v) for v in f[:4]] for f in found if f[2] >= min(h, w) * 0.05)
+    return sorted([int(v) for v in f[:4]] for f in found if f[2] >= min(h, w) * min_frac)
 
 
 def classify(fig: dict, founder_names: set[str]) -> tuple[str, int]:

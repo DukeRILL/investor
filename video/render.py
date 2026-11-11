@@ -8,6 +8,7 @@ W, H, FPS, SS = 1080, 1920, 30, 2  # SS: кадр считается вдвое 
 XFADE = 0.35
 GAP = 0.12        # пауза между репликами
 TAIL = 0.7        # финальная пауза
+MIN_TOTAL = 25.0  # минимальная длина ролика, с
 MAX_PAUSE = 0.3   # более длинные паузы внутри реплики вырезаем: голос Azure иногда дописывает секунды тишины
 FONT_NAME = "Montserrat ExtraBold"
 FONT_FILE = "/usr/share/fonts/truetype/montserrat/Montserrat-ExtraBold.ttf"
@@ -446,6 +447,9 @@ def num_size(txt: str, maxw: int = 980) -> int:
 
 
 def build_ass(timeline: list[dict], total: float) -> str:
+    import names
+    timeline = [{**sc, "words": [(names.display(w), a, b) for w, a, b in sc["words"]], "on_screen": names.display(sc.get("on_screen") or "")}
+                for sc in timeline]
     head = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {W}
@@ -560,13 +564,21 @@ def render(scenes: list[dict], audio_files: list[Path], images: dict[str, dict],
         durs = [clean_voice(a, c, sc["voice"], tempo)[0] for a, c, sc in zip(audio_files, clean, scenes)]
         total_voice = sum(durs) + GAP * (len(scenes) - 1) + TAIL
 
+    # короткая озвучка: растягиваем паузы между фразами и удерживаем финальный кадр, чтобы уложиться в минимум 25 с
+    gap, tail = GAP, TAIL
+    need = MIN_TOTAL + 0.4 - (sum(durs) + GAP * (len(scenes) - 1) + TAIL)
+    if need > 0 and len(scenes) > 1:
+        gap_extra = min(need * 0.5 / (len(scenes) - 1), 0.45)
+        gap += gap_extra
+        tail += min(need - gap_extra * (len(scenes) - 1), 2.6)
+
     timeline, t = [], 0.0
     for i, (sc, c, d) in enumerate(zip(scenes, clean, durs)):
         script = sc["voice"].split()
-        # подсказка улучшает числа и имена, но изредка сбивает модель: берём лучший из двух результатов
-        words, sim = align(script, transcribe(c, sc["voice"]), d)
+        # без подсказки: подсказка с текстом сценария на проверке выдавала «Редактор субтитров» вместо живой речи
+        words, sim = align(script, transcribe(c), d)
         if sim < 0.8:
-            alt = align(script, transcribe(c), d)
+            alt = align(script, transcribe(c, sc["voice"]), d)
             if alt[1] > sim:
                 words, sim = alt
         if sim < 0.5:
@@ -578,7 +590,7 @@ def render(scenes: list[dict], audio_files: list[Path], images: dict[str, dict],
             run("ffmpeg", "-y", "-v", "error", "-i", str(c), "-t", f"{speech_end:.3f}", str(cut))
             cut.replace(c)
             d = probe(c)
-        scene_len = d + (GAP if i < len(scenes) - 1 else TAIL)
+        scene_len = d + (gap if i < len(scenes) - 1 else tail)
         timeline.append({**sc, "words": words, "match": round(sim, 2), "start": round(t, 3), "end": round(t + scene_len, 3)})
         t += scene_len
     total = t
@@ -597,15 +609,24 @@ def render(scenes: list[dict], audio_files: list[Path], images: dict[str, dict],
     voice = tmp / "voice.wav"
     run("ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(voice))
 
-    # видео: клипы длиннее сцены на переход, поэтому смена кадра совпадает с границей реплики
+    # видео: у реплики может быть несколько кадров, они делят её время поровну; смена кадра совпадает с границей слов
+    cuts: list[dict] = []
+    for sc in timeline:
+        sh = sc.get("shots") or [{"image_id": sc["image_id"], "effect": sc.get("effect", "zoom_in")}]
+        step = (sc["end"] - sc["start"]) / len(sh)
+        for j, x in enumerate(sh):
+            cuts.append({**x, "start": round(sc["start"] + j * step, 3), "end": round(sc["start"] + (j + 1) * step, 3)})
     clips: list[Path] = []
     plans = []
-    for i, sc in enumerate(timeline):
-        item = images[sc["image_id"]]
-        plan = plan_motion(item, sc.get("effect", "zoom_in"))
+    for i, cut in enumerate(cuts):
+        item = images[cut["image_id"]]
+        faces = sorted(item.get("faces") or [])
+        if cut.get("focus") is not None and faces:  # крупный план одного человека из общего фото
+            item = {**item, "faces": [faces[min(cut["focus"], len(faces) - 1)]]}
+        plan = plan_motion(item, cut.get("effect", "zoom_in"))
         plans.append(plan)
-        last = i == len(timeline) - 1
-        clip_len = sc["end"] - sc["start"] + (0 if last else XFADE)
+        last = i == len(cuts) - 1
+        clip_len = cut["end"] - cut["start"] + (0 if last else XFADE)
         frames = int(round(clip_len * FPS))
         c = tmp / f"c{i}.mp4"
         if plan["layout"] == "cover":
@@ -624,7 +645,7 @@ def render(scenes: list[dict], audio_files: list[Path], images: dict[str, dict],
     inputs += ["-loop", "1", "-framerate", str(FPS), "-i", str(ov), "-i", str(voice)]
     fc, prev = [], "[0:v]"
     for i in range(1, len(clips)):
-        off = timeline[i]["start"]
+        off = cuts[i]["start"]
         fc.append(f"{prev}[{i}:v]xfade=transition={TRANSITIONS[(i - 1) % len(TRANSITIONS)]}:duration={XFADE}:offset={off:.3f}[x{i}]")
         prev = f"[x{i}]"
     fc.append(f"[{len(clips)}:v]format=rgba[ov]")
@@ -633,10 +654,10 @@ def render(scenes: list[dict], audio_files: list[Path], images: dict[str, dict],
         "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", str(FPS), "-c:a", "aac", "-b:a", "160k",
         "-movflags", "+faststart", str(out))
     manifest = {"duration": round(total, 2), "voice_tempo": round(tempo, 3), "dropped_audio_sec": dropped, "width": W, "height": H, "fps": FPS,
-                "scenes": [{"image_id": s["image_id"], "source_type": s.get("source_type", "original"), "effect": p["effect"], "layout": p["layout"],
-                            "start": s["start"], "end": s["end"], "words_heard": s["match"],
-                            "words": [[w, round(a + s["start"], 2), round(b + s["start"], 2)] for w, a, b in s["words"]]}
-                           for s, p in zip(timeline, plans)]}
+                "scenes": [{"line": s.get("line"), "words_heard": s["match"], "start": s["start"], "end": s["end"],
+                            "words": [[w, round(a + s["start"], 2), round(b + s["start"], 2)] for w, a, b in s["words"]]} for s in timeline],
+                "shots": [{"image_id": c["image_id"], "start": c["start"], "end": c["end"], "effect": p["effect"], "layout": p["layout"]}
+                          for c, p in zip(cuts, plans)]}
     out.with_suffix(".json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
     if not keep_tmp:
         shutil.rmtree(tmp, ignore_errors=True)

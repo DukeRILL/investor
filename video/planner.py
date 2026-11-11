@@ -79,8 +79,12 @@ def validate_scenario(sc: dict, article: str, catalog_ids: set[str]) -> list[str
     return errs
 
 
+NEGATED_RE = re.compile(r"\b(no|without|empty of)\s+(people|person|faces?|humans?|hands|text|letters|logos?)\b", re.I)
+
+
 def safe_image_prompt(p: str | None) -> bool:
-    return bool(p and p.strip()) and not PEOPLE_RE.search(p)
+    """Без людей. Запреты вида «no people, no faces» людьми не считаются."""
+    return bool(p and p.strip()) and not PEOPLE_RE.search(NEGATED_RE.sub(" ", p))
 
 
 def best_original(catalog: list[dict], used: dict[str, int], kind_hint: str | None = None) -> dict:
@@ -127,3 +131,265 @@ def finalize_cta(sc: dict) -> None:
     """Финал дословно как просил владелец, модель его не переписывает."""
     last = sc["scenes"][-1]
     last.update(voice=CTA_VOICE, on_screen=CTA_SCREEN, big_number=None, is_cta=True)
+
+
+# ---------- текст для голоса Azure: только целые русские слова ----------
+VOICE_BAD = [
+    (re.compile(r"\d"), "цифры"),
+    (re.compile(r"[A-Za-z]"), "латиница"),
+    (re.compile(r"[$%€₽&@#/+=*<>«»\"()\[\]]"), "символы"),
+    (re.compile(r"\b(ИИ|ПО|ИТ|США|млн|млрд|тыс|руб|долл)\b|\b[А-ЯЁ]{2,}\b"), "сокращения"),
+]
+
+
+def voice_problems(text: str) -> list[str]:
+    """Что помешает голосу прочитать текст правильно. Пустой список: текст годен для Azure."""
+    out = []
+    for rx, what in VOICE_BAD:
+        found = rx.findall(text)
+        if found:
+            sample = [f if isinstance(f, str) else "".join(f) for f in found][:3]
+            out.append(f"{what}: {', '.join(sorted(set(sample)))}")
+    return out
+
+
+# ---------- план кадров: правила ревью владельца ----------
+CLICHE_RE = re.compile(r"\bcoins?\b|money rain|rocket|light ?bulb|puzzle|handshake|success arrow|\bgold\b", re.I)
+MAX_SHOT = 4.05
+
+
+def shot_problems(shots: list[dict], catalog: dict[str, dict]) -> list[str]:
+    """Нарушения правил кадров. Пустой список: план можно отдавать в генерацию и монтаж."""
+    errs = []
+    if shots and shots[0].get("source_type") != "original":
+        errs.append("первый кадр должен быть реальным фото")
+    for i, s in enumerate(shots):
+        if s["end"] - s["start"] > MAX_SHOT:
+            errs.append(f"кадр {i + 1}: дольше 4 секунд")
+        if i and s.get("image_id") and s.get("image_id") == shots[i - 1].get("image_id") and s.get("focus") == shots[i - 1].get("focus"):
+            errs.append(f"кадр {i + 1}: тот же кадр подряд")
+        if s.get("source_type") == "generated":
+            p = s.get("image_prompt") or ""
+            if not safe_image_prompt(p):
+                errs.append(f"кадр {i + 1}: в промте люди или пусто")
+            if CLICHE_RE.search(p):
+                errs.append(f"кадр {i + 1}: штамп в промте ({CLICHE_RE.search(p).group(0)})")
+        elif s.get("image_id") not in catalog:
+            errs.append(f"кадр {i + 1}: нет изображения {s.get('image_id')}")
+    return errs
+
+
+LOGO_GAP = 7
+
+
+def library_shot_problems(shots: list[dict], library: dict[str, dict]) -> list[str]:
+    """Правила подбора кадров из библиотеки (ревью Ильи 2026-11-08, оценка 2/10)."""
+    errs = []
+    if shots and library.get(shots[0].get("image_id"), {}).get("kind") != "founder":
+        errs.append("первый кадр должен быть реальным фото основателей")
+    logo_at: list[int] = []
+    seen: dict[str, int] = {}
+    founder_uses: dict[str, int] = {}
+    for i, s in enumerate(shots):
+        img = s.get("image_id")
+        item = library.get(img)
+        if item is None:
+            errs.append(f"кадр {i + 1}: нет в библиотеке {img}")
+            continue
+        if s["end"] - s["start"] > MAX_SHOT:
+            errs.append(f"кадр {i + 1}: дольше 4 секунд")
+        if item.get("kind") == "brand":
+            if logo_at and i - logo_at[-1] < LOGO_GAP:
+                errs.append(f"кадр {i + 1}: логотип ближе {LOGO_GAP} кадров к прошлому")
+            logo_at.append(i)
+        elif item.get("kind") == "founder" and img in seen:
+            # решение Ильи 2026-11-08: фото основателей можно показать второй раз с другим кадрированием, не ближе 7 кадров
+            if i - seen[img] < LOGO_GAP or shots[seen[img]].get("focus") == s.get("focus") or founder_uses.get(img, 1) >= 2:
+                errs.append(f"кадр {i + 1}: {img} слишком близко или то же кадрирование")
+            founder_uses[img] = founder_uses.get(img, 1) + 1
+            seen[img] = i
+            continue
+        elif img in seen:
+            errs.append(f"кадр {i + 1}: {img} уже был в кадре {seen[img] + 1}")
+        seen.setdefault(img, i)
+    if len(logo_at) > 2:
+        errs.append("логотип больше 2 раз")
+    return errs
+
+
+def split_library(generated: list[dict], scripts: list[dict]) -> list[list[str]]:
+    """Делит сгенерированные картинки между роликами: у каждого ролика свои (решение Ильи 2026-11-08).
+
+    Картинка уходит ролику, где её факт звучит; при равенстве — ролику, у которого пока меньше картинок.
+    """
+    out: list[list[str]] = [[] for _ in scripts]
+    facts = [{l.get("fact_id") for l in s["lines"]} for s in scripts]
+    for g in generated:
+        cand = [i for i, f in enumerate(facts) if g.get("fact_id") in f] or list(range(len(scripts)))
+        best = min(cand, key=lambda i: (len(out[i]), i))
+        out[best].append(g["id"])
+    return out
+
+
+def assemble_shots(lines: list[dict], matches: dict[str, list[str]], library: dict[str, dict],
+                   used_elsewhere: dict[str, int], max_videos: int = 2, fill_spare: bool = True) -> list[dict]:
+    """Раскладывает кадры по правилам владельца; модель только подсказывает подходящие картинки.
+
+    Кадр не длиннее 4 с, каждая картинка один раз, первый кадр — основатели, логотип только в финале (так он
+    никогда не ближе 7 кадров), сгенерированная картинка не больше чем в max_videos роликах.
+    Если подходящих картинок для фразы меньше, чем нужно кадров, добираем неиспользованными сгенерированными
+    (сначала реже всего показанными) и помечаем кадр fit=False, чтобы это было видно в отчёте.
+    """
+    import math
+    shots: list[dict] = []
+    used: set[str] = set()
+    founder = next((k for k, v in library.items() if v.get("kind") == "founder"), None)
+    brand = next((k for k, v in library.items() if v.get("kind") == "brand"), None)
+
+    def free(img: str) -> bool:
+        item = library.get(img)
+        if item is None or img in used or item.get("kind") == "brand":
+            return False
+        return item.get("kind") != "generated" or used_elsewhere.get(img, 0) < max_videos
+
+    for li, ln in enumerate(lines):
+        dur = ln["end"] - ln["start"]
+        need = max(1, math.ceil(dur / MAX_SHOT - 1e-9))
+        if ln["line"] == "CTA" and brand:
+            shots.append({"line": "CTA", "start": ln["start"], "end": ln["end"], "image_id": brand, "source_type": "original", "fit": True})
+            continue
+        cands = list(matches.get(ln["line"], []))
+        if li == 0 and founder:
+            cands = [founder] + [c for c in cands if c != founder]
+        picks = [(c, True) for c in dict.fromkeys(cands) if free(c)][:need]
+        for c, _ in picks:
+            used.add(c)
+        while fill_spare and len(picks) < need:
+            spare = sorted((k for k, v in library.items() if v.get("kind") == "generated" and free(k)),
+                           key=lambda k: (used_elsewhere.get(k, 0), k))
+            if not spare:
+                break
+            used.add(spare[0])
+            picks.append((spare[0], False))
+        gaps = need - len(picks)
+        if not fill_spare and gaps > 0:  # пустые места отдаём вызывающему: он добирает картинки (FLUX, потом стоки)
+            picks += [(None, False)] * gaps
+        if not picks:
+            if shots:
+                shots[-1]["end"] = ln["end"]
+            continue
+        step = dur / len(picks)
+        for i, (img, fit) in enumerate(picks):
+            shots.append({"line": ln["line"], "start": round(ln["start"] + i * step, 2), "end": round(ln["start"] + (i + 1) * step, 2),
+                          "image_id": img, "source_type": "generated" if img and library[img].get("kind") == "generated" else "original", "fit": fit})
+    return shots
+
+
+BANNED_QUERY_RE = re.compile(r"old|vintage|retro|antique|classic|dusty|rusty|abandoned|crt|cathode|90s|80s|2000s|black and white|monochrome|floppy|typewriter|"
+                             r"toolbox|tool ?belt|wrench|screw|bolt|puzzle|rubik|jigsaw|light ?bulb|rocket|\bcoins?\b|money|gear|vault|chain|mousetrap|"
+                             r"paper airplane|unicorn|robot|arrow|chart|graph|screen|monitor|laptop|keyboard|sign\b|logo|book|document|receipt", re.I)
+
+
+def clean_queries(queries: list[str]) -> list[str]:
+    """Запросы для стоков без метафор и без предметов с текстом: DeepSeek нарушает запрет в промте, поэтому проверяет код."""
+    return [q for q in queries if q and not BANNED_QUERY_RE.search(q) and 2 <= len(q.split()) <= 5]
+
+
+def fill_gaps(videos: list[list[dict]], library: dict[str, dict], used: dict[str, int], max_videos: int = 3) -> int:
+    """Закрывает пробелы в раскладке: сначала неиспользованные в ролике сгенерированные (у кого меньше показов),
+    потом второй показ фото основателей другим кадрированием не ближе LOGO_GAP кадров. Возвращает число оставшихся пробелов."""
+    founder = next((k for k, v in library.items() if v.get("kind") == "founder"), None)
+    for _ in range(40):
+        progress = False
+        order = sorted(range(len(videos)), key=lambda i: -sum(s["image_id"] is None for s in videos[i]))
+        for vi in order:
+            shots = videos[vi]
+            idx = next((i for i, s in enumerate(shots) if s["image_id"] is None), None)
+            if idx is None:
+                continue
+            have = {s["image_id"] for s in shots}
+            spare = sorted((k for k, v in library.items() if v.get("kind") == "generated" and k not in have and used.get(k, 0) < max_videos),
+                           key=lambda k: (used.get(k, 0), k))
+            if spare:
+                shots[idx].update(image_id=spare[0], source_type="generated", fit=False)
+                used[spare[0]] = used.get(spare[0], 0) + 1
+                progress = True
+                continue
+            pos = [i for i, s in enumerate(shots) if s["image_id"] == founder]
+            far = [i for i, s in enumerate(shots) if s["image_id"] is None and all(abs(i - j) >= LOGO_GAP for j in pos)]
+            if founder and len(pos) == 1 and far:
+                shots[far[0]].update(image_id=founder, source_type="original", fit=False, focus=0, effect="zoom_in")
+                progress = True
+        if not progress:
+            break
+    return sum(s["image_id"] is None for sh in videos for s in sh)
+
+
+HOOK_TYPES = {"number", "paradox", "question", "contrast"}
+HOOK_MAX_WORDS = 14  # мастер-промт хуков: 7–14 слов (правило Ильи 2026-11-08, заменило прежние 9)
+HOOK_MIN_WORDS = 7
+BAD_OPENINGS = re.compile(r"^(привет|друзья|сегодня расскажу|давайте|в этом видео|компания )", re.I)
+
+
+def hook_problems(script: dict) -> list[str]:
+    """Хук обязателен в каждом сценарии (правило владельца 2026-11-08): первая озвученная фраза коротко останавливает зрителя."""
+    lines = [l for l in script.get("lines", []) if l.get("voice")]
+    if not lines:
+        return ["нет фраз"]
+    errs = []
+    first = lines[0]
+    n = len(first["voice"].split())
+    if n > HOOK_MAX_WORDS:
+        errs.append(f"хук {n} слов, нужно не больше {HOOK_MAX_WORDS}")
+    if BAD_OPENINGS.search(first["voice"].strip()):
+        errs.append("сценарий открывается приветствием или общей фразой, а не хуком")
+    hook = script.get("hook") or {}
+    if hook.get("type") not in HOOK_TYPES:
+        errs.append("нет поля hook с типом number, paradox, question или contrast")
+    if not (first.get("on_screen") or "").strip():
+        errs.append("у хука нет экранной надписи")
+    return errs
+
+
+HOOK_CATEGORIES = ["VIRAL", "SMART", "EMOTIONAL"]
+
+
+HOOK_BAD = re.compile(r"вы не поверите|это изменило всё|секрет успеха|^(сегодня расскажем|знакомьтесь|история компании)", re.I)
+
+
+def _content_words(t: str) -> set[str]:
+    return {w for w in norm(t).split() if len(w) > 3}
+
+
+def hook_engine_problems(res: dict, article: str) -> list[str]:
+    """Проверка ответа мастер-промта хуков: три финалиста разных механик, 7–14 слов, оценка не ниже 9, опора на статью
+    (числа хука и продолжения есть в статье, fact_basis пересказывает текст статьи), победитель среди финалистов.
+    Цифры в хуке допустимы: слова для озвучки получаются на этапе сценария (voice_problems проверяет уже его)."""
+    errs: list[str] = []
+    hooks = res.get("hooks") or []
+    if [h.get("category") for h in hooks] != HOOK_CATEGORIES:
+        errs.append("нужны ровно три финалиста: VIRAL, SMART, EMOTIONAL")
+    art, art_words, nums = norm(article), _content_words(article), article_numbers(article)
+    for h in hooks:
+        name, text = h.get("category"), (h.get("hook") or "").strip()
+        n = len(text.split())
+        if not HOOK_MIN_WORDS <= n <= HOOK_MAX_WORDS:
+            errs.append(f"{name}: хук {n} слов, нужно {HOOK_MIN_WORDS}–{HOOK_MAX_WORDS}")
+        if HOOK_BAD.search(text):
+            errs.append(f"{name}: клише или вступление")
+        for d in re.findall(r"\d[\d.,]*", text + " " + (h.get("next_line") or "")):
+            if not number_ok(d.replace(",", ".").rstrip("."), nums):
+                errs.append(f"{name}: числа {d} нет в статье")
+        fb = _content_words(h.get("fact_basis") or "")
+        if not fb or len(fb & art_words) / len(fb) < 0.6:
+            errs.append(f"{name}: fact_basis не опирается на текст статьи")
+        if (h.get("score") or 0) < 9:
+            errs.append(f"{name}: оценка {h.get('score')} ниже 9")
+        if not (h.get("next_line") or "").strip() or not (h.get("visual") or "").strip():
+            errs.append(f"{name}: нет next_line или visual")
+    win = (res.get("winner") or {}).get("hook")
+    if win not in [h.get("hook") for h in hooks]:
+        errs.append("winner не совпадает ни с одним финалистом")
+    if len({h.get("hook") for h in hooks}) < len(hooks):
+        errs.append("повторяющиеся хуки")
+    return errs

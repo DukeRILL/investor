@@ -42,6 +42,15 @@ def call_deepseek(system: str, user: str) -> dict:
     return json.loads(r.json()["choices"][0]["message"]["content"])
 
 
+def check_scenario(sc: dict, article: str, ids: set[str]) -> list[str]:
+    """Проверки сценария + обязательный хук (правило владельца): плохой хук останавливает запуск до озвучки."""
+    errs = P.validate_scenario(sc, article, ids)
+    scenes = sc.get("scenes") or []
+    if scenes:
+        errs += P.hook_problems({"hook": sc.get("hook"), "lines": [{"voice": x.get("voice"), "on_screen": x.get("on_screen")} for x in scenes]})
+    return errs
+
+
 def write_scenarios(system: str, article: str, images: list[dict], ids: set[str], ask=call_deepseek) -> tuple[dict, int]:
     """Запрашивает 4 сценария. При ошибках просит переписать только плохие, не больше MAX_CALLS запросов."""
     user = "ARTICLE:\n" + article[:14000] + "\n\nIMAGE_CATALOG:\n" + json.dumps(images, ensure_ascii=False)
@@ -50,7 +59,7 @@ def write_scenarios(system: str, article: str, images: list[dict], ids: set[str]
     items = res.get("scenarios") or []
     while True:
         items = (items + [{}] * 4)[:4]
-        bad = {i: P.validate_scenario(s, article, ids) for i, s in enumerate(items)}
+        bad = {i: check_scenario(s, article, ids) for i, s in enumerate(items)}
         bad = {i: e for i, e in bad.items() if e}
         if not bad or calls >= MAX_CALLS:
             break
@@ -64,7 +73,7 @@ def write_scenarios(system: str, article: str, images: list[dict], ids: set[str]
                 items[i] = fresh[i]
     for i, s in enumerate(items):
         s["hypothesis"] = P.HYPOTHESES[i]
-        s["problems"] = P.validate_scenario(s, article, ids)
+        s["problems"] = check_scenario(s, article, ids)
     res["scenarios"] = items
     return res, calls
 
@@ -123,6 +132,21 @@ async def put_audio(request):
     return JSONResponse({"ok": True})
 
 
+def image_problem(raw: bytes) -> str | None:
+    import io
+    from PIL import Image, ImageStat
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except (OSError, ValueError):
+        return "не картинка"
+    if min(img.size) < 512:
+        return "мало пикселей"
+    if max(ImageStat.Stat(img.convert("L")).stddev) < 8:
+        return "пустой кадр"
+    return None
+
+
 async def put_image(request):
     image_id = request.path_params["image_id"]
     if not re.fullmatch(r"gen\d\d", image_id):
@@ -132,8 +156,44 @@ async def put_image(request):
     except ValueError:
         return JSONResponse({"error": "job"}, 400)
     p.mkdir(parents=True, exist_ok=True)
-    (p / f"{image_id}.png").write_bytes(await request.body())
+    body = await request.body()
+    why = image_problem(body)
+    if why:  # FLUX дал брак (мелкая или пустая картинка): n8n добирает из Pixabay
+        return JSONResponse({"ok": False, "error": why})
+    (p / f"{image_id}.png").write_bytes(body)
     return JSONResponse({"ok": True})
+
+
+def stock_one(job: str, s: int, image_id: str, prompt: str) -> dict:
+    """Приоритет 2: готовое фото Pixabay вместо FLUX. Нашлось -> сохранено как кадр сцены; нет -> found=false, дальше FLUX."""
+    import stock
+    from PIL import Image
+    q = stock.query_from_prompt(prompt)
+    if not q or not (os.environ.get("PIXABAY_API_KEY") or os.environ.get("PEXELS_API_KEY")):
+        return {"found": False, "why": "нет запроса или ключа"}
+    jd = job_dir(job)
+    import imagedb
+    db = imagedb.connect(DATA / "images.sqlite")
+    got = stock.pick(q, DATA / "stock", C.detect_faces, set(), db=db, issue=job)
+    if not got:
+        return {"found": False, "query": q}
+    gdir = jd / "generated" / f"s{s}"
+    gdir.mkdir(parents=True, exist_ok=True)
+    Image.open(got["file"]).save(gdir / f"{image_id}.png")
+    meta = {k: got[k] for k in ("source", "id", "page", "author", "width", "height", "query", "license")}
+    (gdir / f"{image_id}.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return {"found": True, **meta}
+
+
+async def put_stock(request):
+    b = await request.json()
+    image_id = request.path_params["image_id"]
+    if not re.fullmatch(r"gen\d\d", image_id):
+        return JSONResponse({"error": "image_id"}, 400)
+    try:
+        return JSONResponse(await run_in_threadpool(stock_one, request.path_params["job"], int(request.path_params["s"]), image_id, str(b.get("prompt", ""))))
+    except ValueError:
+        return JSONResponse({"error": "job"}, 400)
 
 
 def render_one(job: str, s: int) -> dict:
@@ -151,6 +211,8 @@ def render_one(job: str, s: int) -> dict:
         from PIL import Image
         w, h = Image.open(g).size
         images[g.stem] = {"id": g.stem, "file": str(g), "width": w, "height": h, "faces": [], "kind": "generated"}
+        if g.with_suffix(".json").exists():  # стоковое фото: источник и лицензия идут в манифест
+            images[g.stem]["stock"] = json.loads(g.with_suffix(".json").read_text(encoding="utf-8"))
     missing = [x["image_id"] for x in scenes if x["image_id"] not in images]
     if missing:
         raise ValueError(f"нет изображений: {missing}")
@@ -160,8 +222,13 @@ def render_one(job: str, s: int) -> dict:
         info = R.render(scenes, audio, images, out)
         info["sync"] = R.verify_sync(out, info)
     info["hypothesis"] = sc["hypothesis"]
+    info["stock"] = {k: v["stock"] for k, v in images.items() if v.get("stock") and any(x["image_id"] == k for x in scenes)}
     info["counts"] = {"original": sum(x["source_type"] == "original" for x in scenes), "generated": sum(x["source_type"] == "generated" for x in scenes)}
     out.with_suffix(".json").write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
+    import imagedb  # показ фиксируется в базе: через 30 дней картинку можно брать снова
+    db = imagedb.connect(DATA / "images.sqlite")
+    for st in info["stock"].values():
+        imagedb.mark_used(db, st["id"], job, out.name)
     return {k: v for k, v in info.items() if k != "scenes"} | {"file": f"/out/{out.name}", "path": str(out)}
 
 
@@ -185,4 +252,5 @@ app = Starlette(routes=[
     Route("/health", health), Route("/scenarios", scenarios, methods=["POST"]),
     Route("/jobs/{job}/{s:int}/audio/{n:int}", put_audio, methods=["PUT"]),
     Route("/jobs/{job}/{s:int}/image/{image_id}", put_image, methods=["PUT"]),
+    Route("/jobs/{job}/{s:int}/stock/{image_id}", put_stock, methods=["POST"]),
     Route("/render", do_render, methods=["POST"]), Route("/out/{name}", get_out)])
