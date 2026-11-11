@@ -199,3 +199,16 @@ def test_riddle_page_ends_with_channel_button():
                                  "https://t.me/investor_duker", None, "https://img/tg.png")
     flat = [json.dumps(n, ensure_ascii=False) for n in nodes]
     assert "tg.png" in flat[-2] and "🦄 Перейти на канал" in flat[-1]
+
+
+def test_logo_must_belong_to_company_and_be_big():
+    from investor_agent.riddle import visuals
+    assert visuals.host_matches_company("www.xiaomi.com", "Xiaomi")
+    assert not visuals.host_matches_company("statista.com", "Xiaomi")
+    assert not visuals.host_matches_company("", "Xiaomi")
+    import io
+    from PIL import Image
+    tiny, big = io.BytesIO(), io.BytesIO()
+    Image.new("RGB", (16, 16), "red").save(tiny, "PNG")
+    Image.new("RGB", (128, 128), "red").save(big, "PNG")
+    assert not visuals.logo_big_enough(tiny.getvalue()) and visuals.logo_big_enough(big.getvalue())
