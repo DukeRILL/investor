@@ -85,3 +85,6 @@ Return only JSON:
 - `metrics`: exactly 4, each with a source id. `verdict_scores`: exactly 4 with the labels above. `subtitle`, `facts_line`: always.
 - `sections` must contain all nine ids in order. `body` is plain text with line breaks and blank lines between paragraphs; allowed: `**bold**`, bullet lines starting with `• `, numbered lines `1. `, subheadings on their own line starting with `### `, citations `[S1]`. No HTML, no tables, no `#` headings.
 - `media`: 6–10 items from retrieved pages (at least five are required); `section` is the id of the section where a photo belongs (videos are placed together in a block after the lesson section). `charts` is `[]` without reliable comparable data (each chart: at least 3 points, one unit, one source, dates as labels); the server draws them.
+
+
+**Number notation (owner's rule, 2026-11-11):** never use Chinese number markers (亿, 万 …) in the published text; write only «млрд», «млн», «тыс.».
