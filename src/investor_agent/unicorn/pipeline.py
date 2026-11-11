@@ -588,6 +588,30 @@ def _grow_glossary(app: App, report: dict) -> None:
         log.warning("glossary update failed: %s", exc)
 
 
+def _postmypost_text(report: dict, date_str: str, page_url: str) -> str:
+    """A neutral VK text; Telegram markup and its publishing flow stay separate."""
+    teaser = re.sub(r"\[S\d+\]", "", report.get("teaser", ""))
+    teaser = re.sub(r"<[^>]+>", "", teaser).strip()
+    return (f"🦄 ШКОЛА ЕДИНОРОГОВ · {date_str}\n"
+            f"Компания дня: {report['company_name']}\n\n{teaser}\n\nПодробнее: {page_url}")
+
+
+def _publish_vk(app: App, today: str, report: dict, date_str: str, page_url: str) -> None:
+    """Postmypost is an optional downstream target and can never undo Telegram."""
+    if not app.postmypost:
+        return
+    hero = hero_photo(report)
+    image = hero.get("src") if hero else None
+    try:
+        result = app.postmypost.publish(today, _postmypost_text(report, date_str, page_url), image)
+        log.info("Postmypost VK %s: %s", today, result)
+    except Exception as exc:  # noqa: BLE001
+        # Telegram has already been marked published. The durable provider
+        # state retains the error/unknown result for an operator to reconcile.
+        log.warning("Postmypost VK %s failed: %s", today, exc)
+        app.notify_admin(f"Postmypost VK: публикация {today} не создана автоматически: {exc}")
+
+
 def publish(app: App, today: str | None = None) -> str:
     """10:00 job: Telegraph page + short post with a button. No DeepSeek calls here."""
     today = today or issue_date()
@@ -612,6 +636,7 @@ def publish(app: App, today: str | None = None) -> str:
         app.notify_admin(f"Школа единорогов: публикация {today} не удалась: {exc}")
         return "failed"
     app.store.draft_mark(today, "published", page_url=url, message_ids=[mid])
+    _publish_vk(app, today, report, date_str, url)
     chosen = payload.get("chosen", {})
     app.store.archive_add(report["company_name"], report.get("industry") or chosen.get("industry", ""),
                           report.get("country") or chosen.get("country", ""), today, url,

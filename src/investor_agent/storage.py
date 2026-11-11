@@ -35,6 +35,13 @@ CREATE TABLE IF NOT EXISTS usage (
     detail TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, until TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tool_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS social_publications (
+    article_id TEXT NOT NULL, social_network TEXT NOT NULL,
+    publication_id TEXT, status TEXT NOT NULL, post_url TEXT,
+    scheduled_at TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (article_id, social_network)
+);
+CREATE INDEX IF NOT EXISTS social_publications_status ON social_publications(status);
 """
 
 
@@ -174,6 +181,38 @@ class Store:
                       "THEN ? ELSE published_at END WHERE issue_date=?",
                       (status, page_url, json.dumps(message_ids) if message_ids else None, error, status, utcnow(),
                        issue_date))
+
+    # external social publishing: the unique key is the duplicate barrier.
+    # "creating" is retained after an ambiguous network failure; it must be
+    # reconciled against the provider rather than blindly posted again.
+    def social_get(self, article_id: str, network: str) -> dict | None:
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM social_publications WHERE article_id=? AND social_network=?",
+                            (article_id, network)).fetchone()
+        return dict(row) if row else None
+
+    def social_begin(self, article_id: str, network: str, scheduled_at: str | None = None) -> bool:
+        now = utcnow()
+        with self._conn() as c:
+            try:
+                c.execute("INSERT INTO social_publications(article_id, social_network, status, scheduled_at, "
+                          "created_at, updated_at) VALUES (?,?, 'creating', ?, ?, ?)",
+                          (article_id, network, scheduled_at, now, now))
+            except sqlite3.IntegrityError:
+                return False
+        return True
+
+    def social_mark(self, article_id: str, network: str, status: str, *, publication_id: str | None = None,
+                    post_url: str | None = None, error: str | None = None) -> None:
+        with self._conn() as c:
+            c.execute("UPDATE social_publications SET status=?, publication_id=COALESCE(?, publication_id), "
+                      "post_url=COALESCE(?, post_url), error=?, updated_at=? WHERE article_id=? AND social_network=?",
+                      (status, publication_id, post_url, error[:2000] if error else None, utcnow(), article_id, network))
+
+    def social_pending(self) -> list[dict]:
+        with self._conn() as c:
+            return [dict(r) for r in c.execute("SELECT * FROM social_publications "
+                                               "WHERE status IN ('created','scheduled') ORDER BY updated_at")]
 
     # radar
     def radar_history(self, limit: int = 25) -> list[dict]:

@@ -25,6 +25,12 @@ class Settings(BaseModel):
     cloudinary_cloud_name: str = ""
     cloudinary_api_key: str = ""
     cloudinary_api_secret: str = ""
+    # Postmypost is deliberately opt-in: a missing flag leaves every existing
+    # Telegram/Telegraph path untouched.
+    postmypost_enabled: bool = False
+    postmypost_api_token: str = ""
+    postmypost_project_id: int = 0
+    postmypost_vk_account_id: int = 0
     database_path: Path = Path("data/investor.sqlite3")
     prompts_dir: Path = PROJECT_ROOT / "prompts"
     radar_config_path: Path = PROJECT_ROOT / "config" / "radar.yaml"
@@ -71,6 +77,7 @@ def load_settings(env_file: Path | str = ".env") -> Settings:
             merged[new] = merged[old]
     fields = Settings.model_fields
     data = {name: merged[name.upper()] for name in fields if name.upper() in merged and merged[name.upper()] != ""}
-    if "scheduler_enabled" in data:
-        data["scheduler_enabled"] = str(data["scheduler_enabled"]).lower() in {"1", "true", "yes"}
+    for name in ("scheduler_enabled", "postmypost_enabled"):
+        if name in data:
+            data[name] = str(data[name]).lower() in {"1", "true", "yes"}
     return Settings(**data)

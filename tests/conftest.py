@@ -113,6 +113,13 @@ class FakeHttp:
         self.posted = {"url": url, "filename": filename, "fields": fields}
         return {"secure_url": "https://res.cloudinary.com/demo/image/upload/unicorn/abc.jpg"}
 
+    def request(self, method, url, *, json_body=None, params=None, headers=None, timeout=60, retry=True):
+        from investor_agent.http import HttpError
+        raise HttpError(404, "not found")
+
+    def put_bytes(self, url, data, content_type, timeout=60):
+        self.put = {"url": url, "data": data, "content_type": content_type}
+
     def head(self, url, timeout=15):
         return 200 if url not in getattr(self, "dead", set()) else 404
 

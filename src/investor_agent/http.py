@@ -5,6 +5,7 @@ import json
 import logging
 import socket
 import time
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
@@ -12,9 +13,10 @@ log = logging.getLogger(__name__)
 
 
 class HttpError(RuntimeError):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, retry_after: float | None = None):
         super().__init__(f"HTTP {status}: {message[:300]}")
         self.status = status
+        self.retry_after = retry_after
 
 
 def is_public_url(url: str) -> bool:
@@ -35,7 +37,9 @@ def is_public_url(url: str) -> bool:
 
 class Http(Protocol):
     def request(self, method: str, url: str, *, json_body: Any = None, params: dict | None = None,
-                headers: dict | None = None, timeout: float = 60) -> Any: ...
+                headers: dict | None = None, timeout: float = 60, retry: bool = True) -> Any: ...
+
+    def put_bytes(self, url: str, data: bytes, content_type: str, timeout: float = 60) -> None: ...
 
     def get_bytes(self, url: str, max_bytes: int = 6_000_000, timeout: float = 30) -> tuple[bytes, str]: ...
 
@@ -54,17 +58,32 @@ class HttpxClient:
         self._client = httpx.Client(follow_redirects=True, headers={"User-Agent": "investor-agent/1.0"})
         self.retries = retries
 
-    def request(self, method, url, *, json_body=None, params=None, headers=None, timeout=60):
+    def request(self, method, url, *, json_body=None, params=None, headers=None, timeout=60, retry=True):
         delay = 2.0
-        for attempt in range(self.retries + 1):
+        retries = self.retries if retry else 0
+        for attempt in range(retries + 1):
             response = self._client.request(method, url, json=json_body, params=params, headers=headers, timeout=timeout)
             if response.status_code in (408, 429) or response.status_code >= 500:
-                if attempt < self.retries:
+                if attempt < retries:
+                    retry_after = response.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = max(0.0, float(retry_after))
+                        except ValueError:
+                            try:
+                                delay = max(0.0, parsedate_to_datetime(retry_after).timestamp() - time.time())
+                            except (TypeError, ValueError):
+                                pass
                     time.sleep(delay)
                     delay *= 2
                     continue
             if response.status_code >= 400:
-                raise HttpError(response.status_code, response.text)
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    retry_after_seconds = float(retry_after) if retry_after else None
+                except ValueError:
+                    retry_after_seconds = None
+                raise HttpError(response.status_code, response.text, retry_after_seconds)
             ctype = response.headers.get("content-type", "")
             if "json" in ctype:
                 return response.json()
@@ -73,6 +92,11 @@ class HttpxClient:
             except ValueError:
                 return response.text
         raise HttpError(599, "retries exhausted")
+
+    def put_bytes(self, url: str, data: bytes, content_type: str, timeout: float = 60) -> None:
+        response = self._client.put(url, content=data, headers={"Content-Type": content_type}, timeout=timeout)
+        if response.status_code >= 400:
+            raise HttpError(response.status_code, response.text)
 
     def get_bytes(self, url: str, max_bytes: int = 6_000_000, timeout: float = 30) -> tuple[bytes, str]:
         """Download a public file (image or HTML) with a size cap. Returns (body, lower-case content type)."""

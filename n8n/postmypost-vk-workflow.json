@@ -1,0 +1,45 @@
+{
+  "name": "Investor — Postmypost VK (v4.1)",
+  "nodes": [
+    {
+      "parameters": {"path": "investor-postmypost-vk", "httpMethod": "POST", "responseMode": "lastNode"},
+      "id": "trigger", "name": "Article webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 300]
+    },
+    {
+      "parameters": {"method": "POST", "url": "https://api.postmypost.io/v4.1/upload/init", "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Authorization", "value": "=Bearer {{$env.POSTMYPOST_API_TOKEN}}"}, {"name": "Accept", "value": "application/json"}]},
+        "sendBody": true, "contentType": "json", "jsonBody": "={\"project_id\": Number($env.POSTMYPOST_PROJECT_ID), \"url\": $json.body.image_url}"},
+      "id": "upload", "name": "Import public image", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [240, 300]
+    },
+    {
+      "parameters": {"amount": 10, "unit": "seconds"},
+      "id": "wait", "name": "Wait for import", "type": "n8n-nodes-base.wait", "typeVersion": 1.1, "position": [620, 300]
+    },
+    {
+      "parameters": {"method": "POST", "url": "https://api.postmypost.io/v4.1/upload/complete", "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Authorization", "value": "=Bearer {{$env.POSTMYPOST_API_TOKEN}}"}, {"name": "Accept", "value": "application/json"}]},
+        "sendBody": true, "contentType": "json", "jsonBody": "={\"id\": $('Import public image').item.json.data?.id || $('Import public image').item.json.id}"},
+      "id": "complete", "name": "Complete import", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [430, 300]
+    },
+    {
+      "parameters": {"url": "https://api.postmypost.io/v4.1/upload/status", "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Authorization", "value": "=Bearer {{$env.POSTMYPOST_API_TOKEN}}"}, {"name": "Accept", "value": "application/json"}]},
+        "sendQuery": true, "queryParameters": {"parameters": [{"name": "id", "value": "={{$('Import public image').item.json.data?.id || $('Import public image').item.json.id}}"}]}},
+      "id": "status", "name": "Check upload status", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [810, 300]
+    },
+    {
+      "parameters": {"jsCode": "const upload = $json.data ?? $json;\nif (upload.status !== 1 || !upload.file_id) throw new Error('Postmypost image is not ready; retry this execution after processing');\nreturn [{json: {file_id: upload.file_id}}];"},
+      "id": "ready", "name": "Require ready file", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1000, 300]
+    },
+    {
+      "parameters": {"method": "POST", "url": "https://api.postmypost.io/v4.1/publications", "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Authorization", "value": "=Bearer {{$env.POSTMYPOST_API_TOKEN}}"}, {"name": "Accept", "value": "application/json"}]},
+        "sendBody": true, "contentType": "json", "jsonBody": "={\"project_id\": Number($env.POSTMYPOST_PROJECT_ID), \"account_ids\": [Number($env.POSTMYPOST_VK_ACCOUNT_ID)], \"publication_status\": 4, \"post_at\": $('Article webhook').item.json.body.post_at || undefined, \"details\": [{\"publication_type\": \"post\", \"content\": $('Article webhook').item.json.body.text, \"file_ids\": [$json.file_id]}]}"},
+      "id": "publication", "name": "Create publication", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1190, 300]
+    }
+  ],
+  "connections": {"Article webhook": {"main": [[{"node": "Import public image", "type": "main", "index": 0}]]}, "Import public image": {"main": [[{"node": "Complete import", "type": "main", "index": 0}]]}, "Complete import": {"main": [[{"node": "Wait for import", "type": "main", "index": 0}]]}, "Wait for import": {"main": [[{"node": "Check upload status", "type": "main", "index": 0}]]}, "Check upload status": {"main": [[{"node": "Require ready file", "type": "main", "index": 0}]]}, "Require ready file": {"main": [[{"node": "Create publication", "type": "main", "index": 0}]]}},
+  "active": false,
+  "settings": {"executionOrder": "v1"},
+  "versionId": "postmypost-v4-1-template"
+}

@@ -24,6 +24,7 @@ UNICORN_RETRY_UNTIL = 22             # no new attempts from 22:00; tomorrow's 04
 UNICORN_PUBLISH_TIME = (10, 0)
 RADAR_DIGEST_TIME = radar_digest.DIGEST_TIME_BEIJING   # 22:00 Moscow
 RADAR_EVERY_HOURS = 3
+POSTMYPOST_REFRESH_MINUTES = 15
 WEEKLY_REPORT = (6, 20, 0)   # Sunday 20:00 Beijing
 
 
@@ -55,6 +56,11 @@ def next_weekly(now: datetime) -> datetime:
     return dt if dt > now else dt + timedelta(days=7)
 
 
+def next_postmypost_refresh(now: datetime) -> datetime:
+    now = now.astimezone(BEIJING).replace(second=0, microsecond=0)
+    return now + timedelta(minutes=POSTMYPOST_REFRESH_MINUTES - now.minute % POSTMYPOST_REFRESH_MINUTES)
+
+
 @dataclass
 class Job:
     name: str
@@ -81,11 +87,17 @@ class Scheduler:
             Job("radar_digest", lambda: radar_digest.run(app), lambda n: next_daily(n, (RADAR_DIGEST_TIME,)),
                 uses_deepseek=False),
             Job("weekly_report", lambda: send_weekly_report(app), next_weekly, uses_deepseek=False),
+            Job("postmypost_refresh", self._refresh_postmypost, next_postmypost_refresh, uses_deepseek=False),
         ]
         now = clock()
         for job in self.jobs:
             job.next_run = job.next_fn(now)
         self._catch_up(now)
+
+    def _refresh_postmypost(self) -> str:
+        if not self.app.postmypost or not self.app.settings.postmypost_enabled:
+            return "disabled"
+        return f"refreshed:{self.app.postmypost.refresh_pending()}"
 
     def _job(self, name: str) -> Job:
         return next(j for j in self.jobs if j.name == name)
