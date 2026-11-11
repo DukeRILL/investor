@@ -146,6 +146,19 @@ class FakeDeepSeek:
 
     def research(self, model, system, payload, registry, **kw):
         self.calls.append({"model": model, "payload": payload})
+        if not self.handlers and isinstance(payload, dict) and payload.get("mode") == "approx":
+            # the Unicorn School fact gate when a test does not script it: one real, opened source, one material claim
+            quote = "Acme was founded to build the product."
+            src = registry.add("https://reuters.com/default", "Default", "Reuters")
+            registry.mark_fetched(src.id, "Default", quote)
+            import re
+            claims = [{"id": "C0", "field": "teaser", "text": "основание компании", "kind": "bio",
+                       "material": True, "source": src.id, "source_quote": quote, "status": "VERIFIED"}]
+            for i, n in enumerate(re.findall(r"\d+", str(payload["article"].get("teaser") or "")), 1):
+                claims.append({"id": f"N{i}", "field": "teaser", "text": "число анонса", "kind": "amount", "material": True,
+                               "source": src.id, "source_quote": quote, "status": "VERIFIED", "article_value": n,
+                               "source_value": n})
+            return {"claims": claims}
         return self.handlers.pop(0)(registry, payload)
 
     def fetch(self, url):
@@ -156,8 +169,8 @@ class FakeDeepSeek:
 def make_app(tmp_path):
     def _make(deepseek=None, telegram=None, mode="auto", admin="111", http=None, images=None):
         settings = Settings(database_path=tmp_path / "db.sqlite3", publish_mode=mode, telegram_admin_chat_id=admin,
-                            deepseek_api_key="k", telegram_bot_token="t", growth_enabled=True)
-        return App(settings=settings, http=http, store=Store(settings.database_path),
+                            deepseek_api_key="k", telegram_bot_token="t", growth_enabled=True, typesafe_api_key="ts")
+        return App(settings=settings, http=http if http is not None else FakeHttp(), store=Store(settings.database_path),
                    deepseek=deepseek or FakeDeepSeek([]), telegram=telegram or FakeTelegram(),
                    telegraph=FakeTelegraph(), images=images)
     return _make
@@ -175,6 +188,19 @@ class FakeHttp:
 
     def head(self, url, timeout=15):
         return 200 if url not in getattr(self, "dead", set()) else 404
+
+    def request(self, method, url, *, json_body=None, params=None, headers=None, timeout=60, retry=True, retries=None):
+        """Only TypeSafe Jev is scripted: `self.jev(body) -> answer dict`; by default a confident «supported»."""
+        from investor_agent.http import HttpError
+        if "typesafe" not in url:
+            raise HttpError(404, "not scripted")
+        self.jev_calls = getattr(self, "jev_calls", []) + [json_body]
+        qid = next(iter(json_body["questions"]))
+        answer = getattr(self, "jev", None)
+        answer = answer(json_body) if answer else {"type": "choice", "choice": "supported", "confidence": 0.9,
+                                                  "probabilities": {"supported": 0.95, "contradicted": 0.03,
+                                                                    "insufficient": 0.02}}
+        return {"model": "jev-1.13.0", "answers": {qid: answer}, "usage": {"input_tokens": 1, "output_tokens": 1}}
 
     def get_bytes(self, url, max_bytes=6_000_000, timeout=30):
         from investor_agent.http import HttpError

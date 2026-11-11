@@ -66,7 +66,8 @@ def main() -> None:
                           "cover": report.get("cover"), "share_fact": report.get("share_fact"),
                           "discussion_question": report.get("discussion_question"), "quality": report.get("quality"),
                           "video_brief": report.get("video_brief"), "cis": report.get("cis"),
-                          "research_notes": report.get("research_notes") or report.get("fact_check"),
+                          "research_notes": report.get("research_notes"), "fact_check": report.get("fact_check"),
+                          "fact_ledger": report.get("fact_ledger"), "author_fact_ledger": report.get("author_fact_ledger"),
                           "publication": (draft or {}).get("payload", {}).get("status"),
                           "manifests": (draft or {}).get("payload", {}).get("manifests")}, ensure_ascii=False, indent=2))
     elif args.command == "glossary":
