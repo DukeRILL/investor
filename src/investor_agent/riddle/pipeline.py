@@ -575,8 +575,15 @@ def preview_url(app: App, report: dict, registry: SourceRegistry) -> str | None:
     """Post picture (owner's rule, 2026-11-09): the rubric picture with the company's logo, name and sector.
     Falls back to the plain rubric picture when the preview cannot be drawn or uploaded."""
     try:
-        site = registry.get(str(report.get("website_source", "")))
-        logo = visuals.find_logo(app.http, site.url) if site else None
+        from urllib.parse import urlparse  # noqa: PLC0415
+        name = str(report.get("company_name", ""))
+        sites = [registry.get(str(report.get("website_source", "")))] + list(registry.sources.values())
+        logo = None
+        for site in sites:  # only the company's own site: a logo from another site is someone else's icon
+            if site and visuals.host_matches_company(urlparse(site.url).hostname or "", name):
+                logo = visuals.find_logo(app.http, site.url)
+                if logo:
+                    break
         png = visuals.render_preview(PREVIEW_FILE.read_bytes(), report.get("company_name", ""),
                                      report.get("category") or report.get("industry") or "", logo)
         if png:

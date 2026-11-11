@@ -214,6 +214,10 @@ def render_preview(template: bytes, name: str, sector: str, logo: bytes | None =
         try:
             mark = Image.open(io.BytesIO(logo)).convert("RGBA")
             pad = 16
+            box_w, box_h = LOGO_BOX[2] - LOGO_BOX[0] - 2 * pad, LOGO_BOX[3] - LOGO_BOX[1] - 2 * pad
+            if max(mark.size) < min(box_w, box_h):  # small icon: enlarge to fill the square
+                k = min(box_w / mark.width, box_h / mark.height)
+                mark = mark.resize((int(mark.width * k), int(mark.height * k)), Image.LANCZOS)
             mark.thumbnail((LOGO_BOX[2] - LOGO_BOX[0] - 2 * pad, LOGO_BOX[3] - LOGO_BOX[1] - 2 * pad), Image.LANCZOS)
             cx, cy = (LOGO_BOX[0] + LOGO_BOX[2]) // 2, (LOGO_BOX[1] + LOGO_BOX[3]) // 2
             img.paste(mark, (cx - mark.width // 2, cy - mark.height // 2), mark)
@@ -238,6 +242,26 @@ def render_preview(template: bytes, name: str, sector: str, logo: bytes | None =
 _ICON_RE = re.compile(r'<link\b[^>]*rel=["\'][^"\']*(?:apple-touch-icon|icon)[^"\']*["\'][^>]*>', re.I)
 _HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)
 _SIZE_RE = re.compile(r'sizes=["\'](\d+)x', re.I)
+
+
+MIN_LOGO_PX = 64
+
+
+def host_matches_company(host: str, company: str) -> bool:
+    """True when the site's host belongs to the company (its Latin name is part of a host label): a logo taken from any
+    other site (a news page, a registry) is somebody else's icon."""
+    slug = re.sub(r"[^a-z0-9]", "", str(company or "").lower())
+    labels = [re.sub(r"[^a-z0-9]", "", x) for x in str(host or "").lower().removeprefix("www.").split(".")[:-1]]
+    return len(slug) >= 2 and any(slug in x or (len(x) >= 3 and x in slug) for x in labels)
+
+
+def logo_big_enough(data: bytes) -> bool:
+    try:
+        from PIL import Image  # noqa: PLC0415
+        w, h = Image.open(io.BytesIO(data)).size
+        return min(w, h) >= MIN_LOGO_PX
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def find_logo(http: Http, site_url: str) -> bytes | None:
@@ -272,6 +296,8 @@ def find_logo(http: Http, site_url: str) -> bytes | None:
                                              "image/webp", "application/octet-stream"):
                 from PIL import Image  # noqa: PLC0415
                 Image.open(io.BytesIO(data)).verify()
+                if not logo_big_enough(data):
+                    continue
                 return data
         except Exception:  # noqa: BLE001
             continue

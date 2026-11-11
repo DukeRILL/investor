@@ -544,3 +544,15 @@ def test_forged_jev_on_a_sourced_claim_still_goes_to_the_real_jev(make_app):
     out = run(app, report, SourceRegistry(), school_article, APPROX, label="unicorn")
     assert http.jev_calls and out["open"]
     assert report["fact_ledger"][0]["status"] != "VERIFIED" and report["fact_ledger"][0]["jev"]["choice"] == "insufficient"
+
+def test_logo_must_belong_to_company_and_be_big():
+    from investor_agent.riddle import visuals
+    assert visuals.host_matches_company("www.xiaomi.com", "Xiaomi")
+    assert not visuals.host_matches_company("statista.com", "Xiaomi")
+    assert not visuals.host_matches_company("", "Xiaomi")
+    import io
+    from PIL import Image
+    tiny, big = io.BytesIO(), io.BytesIO()
+    Image.new("RGB", (16, 16), "red").save(tiny, "PNG")
+    Image.new("RGB", (128, 128), "red").save(big, "PNG")
+    assert not visuals.logo_big_enough(tiny.getvalue()) and visuals.logo_big_enough(big.getvalue())
